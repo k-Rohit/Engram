@@ -25,6 +25,8 @@ Engram is a personal second brain for knowledge workers who use AI tools heavily
 | Input 3 | ChatGPT JSON export (conversation picker UI) |
 | Input 4 | Web article / Medium / blog URL (trafilatura fetch + parse) |
 | Input 5 | Medium article paste fallback (for paywalled content) |
+| Input 6 | Notion via Notion API (fetch pages from a database or page ID) |
+| Input 7 | Obsidian vault (user uploads exported markdown files as a zip) |
 
 ---
 
@@ -42,7 +44,9 @@ engram/
 │   │   ├── claude_code.py     # Parse /mnt/transcripts JSON files
 │   │   ├── chatgpt.py         # Parse ChatGPT export conversations.json
 │   │   ├── gdrive.py          # Fetch docs via Google Drive MCP
-│   │   └── article.py         # Fetch + parse web article from URL
+│   │   ├── notion.py          # Fetch pages via Notion API
+│   │   ├── obsidian.py        # Parse uploaded zip of markdown files
+│   │   └── article.py         # Fetch + parse web article via trafilatura
 │   ├── memory/
 │   │   ├── __init__.py
 │   │   └── cognee_client.py   # All cognee.add / cognify / search logic
@@ -111,6 +115,44 @@ FastAPI response → React frontend
 - Make Anthropic API call with `mcp_servers` param to fetch content
 - Tag with `[Source: google_drive]`
 
+### Notion
+- User provides a Notion API token and a database ID or page ID
+- Use the official `notion-client` Python SDK
+- Fetch all pages from the database, extract title + body content recursively
+- Tag with `[Source: notion] [Page: <title>]`
+
+```python
+from notion_client import AsyncClient
+
+async def fetch_notion_pages(token: str, database_id: str) -> list[dict]:
+    notion = AsyncClient(auth=token)
+    response = await notion.databases.query(database_id=database_id)
+    return [extract_page_text(page) for page in response["results"]]
+```
+
+### Obsidian
+- User exports their vault or a subfolder as markdown files and uploads as a zip
+- Unzip, walk all `.md` files, read content
+- Preserve filename as the note title
+- Strip Obsidian-specific syntax: `[[wikilinks]]`, `#tags`, frontmatter (`---` blocks)
+- Tag with `[Source: obsidian] [Note: <filename>]`
+
+```python
+import zipfile, pathlib, re
+
+def parse_obsidian_zip(zip_path: str) -> list[dict]:
+    notes = []
+    with zipfile.ZipFile(zip_path) as z:
+        for name in z.namelist():
+            if name.endswith(".md"):
+                content = z.read(name).decode("utf-8")
+                content = re.sub(r"---.*?---", "", content, flags=re.DOTALL)
+                content = re.sub(r"\[\[(.*?)\]\]", r"\1", content)
+                content = re.sub(r"#\w+", "", content)
+                notes.append({"title": pathlib.Path(name).stem, "content": content.strip()})
+    return notes
+```
+
 ### Web Article (Medium, blogs, any public page)
 - User pastes a URL
 - Use `trafilatura` as the primary extractor — it handles Medium, Substack, dev.to, and most blogs cleanly
@@ -172,6 +214,8 @@ The synthesizer prompt must:
 POST /ingest/claude-code        # body: { project: str }  — reads all /mnt/transcripts
 POST /ingest/chatgpt            # body: { project: str, selected_titles: list[str] }, file upload
 POST /ingest/gdrive             # body: { project: str, folder_or_doc: str }
+POST /ingest/notion             # body: { project: str, token: str, database_id: str }
+POST /ingest/obsidian           # file upload: zip of markdown files, body: { project: str }
 POST /ingest/article            # body: { project: str, url: str, content: str | None } — content used when URL extraction fails (paste fallback)
 POST /ask                       # body: { project: str, question: str }
 GET  /graph/{project}           # returns nodes + edges for Cytoscape.js
@@ -196,7 +240,13 @@ On every `/ask` response, refresh the graph via `/graph/{project}`.
 
 Show a project selector dropdown at the top.
 
-Show ingestion buttons: "Sync Claude Code", "Upload ChatGPT Export", "Sync Drive Folder", "Add Article / Medium URL".
+Show ingestion buttons in a 3x2 grid:
+- "Sync Claude Code" (violet outline, brain icon)
+- "Upload ChatGPT Export" (violet outline, upload icon)
+- "Sync Google Drive" (violet outline, drive icon)
+- "Sync Notion" (violet outline, notion icon)
+- "Upload Obsidian Vault" (violet outline, folder icon)
+- "Add Article / Medium URL" (violet outline, link icon)
 
 ---
 
