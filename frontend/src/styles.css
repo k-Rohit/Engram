@@ -78,10 +78,19 @@
   background-color: #7c3aed;
   color: white;
   font-weight: 500;
+  cursor: pointer;
   transition: all 0.2s ease;
   &:hover {
     background-color: #6d28d9;
     box-shadow: 0 0 24px -4px rgba(124, 58, 237, 0.6);
+  }
+  &:active {
+    transform: translateY(1px);
+  }
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+    box-shadow: none;
   }
 }
 
@@ -90,6 +99,7 @@
   color: white;
   font-weight: 500;
   border: 1px solid #1f1f1f;
+  cursor: pointer;
   transition: all 0.2s ease;
   &:hover {
     border-color: #7c3aed;
@@ -101,12 +111,17 @@
   background-color: transparent;
   color: white;
   font-weight: 500;
-  border: 1px solid rgba(124, 58, 237, 0.5);
+  cursor: pointer;
   transition: all 0.2s ease;
+  border: 1px solid rgba(124, 58, 237, 0.5);
   &:hover {
     background-color: rgba(124, 58, 237, 0.1);
     border-color: #7c3aed;
     box-shadow: 0 0 16px -4px rgba(124, 58, 237, 0.4);
+  }
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
   }
 }
 
@@ -114,6 +129,21 @@
   background-color: #111111;
   border: 1px solid #1f1f1f;
   border-radius: 12px;
+}
+
+/* Hoverable source card: lifts + violet glow on hover */
+@utility source-card {
+  background-color: #111111;
+  border: 1px solid #1f1f1f;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  &:hover {
+    border-color: rgba(124, 58, 237, 0.6);
+    background-color: #151515;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px -10px rgba(124, 58, 237, 0.5);
+  }
 }
 
 @keyframes blob-drift {
