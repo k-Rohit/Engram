@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Engram / Cognee
+# cognee_data/ is Cognee's raw data layer (verbatim copies of ingested docs)
+cognee_data/
+*.pyc
+graph_visualization.html
+
+# macOS
+.DS_Store
