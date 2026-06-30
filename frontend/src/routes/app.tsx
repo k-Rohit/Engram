@@ -45,29 +45,36 @@ type ClaudeProject = {
 };
 
 function AppPage() {
-  const [messages, setMessages] = useState<Msg[]>([
-    { role: "user", text: "What did I conclude about graph memory vs vector RAG last month?" },
-    {
-      role: "engram",
-      text: "You found that vector RAG retrieved semantically similar chunks but missed multi-hop reasoning. Your notes converged on graph memory (via Cognee) for any query that needs to traverse concept relationships — e.g. \"how does my project X connect to idea Y I read in March.\"",
-      sources: ["claude_code", "medium", "google_drive"],
-    },
-  ]);
+  const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const send = (e: React.FormEvent) => {
+  const send = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
-    setMessages((m) => [
-      ...m,
-      { role: "user", text: input },
-      {
-        role: "engram",
-        text: "Based on your ingested sources, here's what I remember about that. Cross-referencing your Claude sessions and Medium reads from the last 30 days.",
-        sources: ["claude_code", "chatgpt", "medium"],
-      },
-    ]);
+    const q = input.trim();
+    if (!q || loading) return;
+    setMessages((m) => [...m, { role: "user", text: q }]);
     setInput("");
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: "personal-brain", question: q }),
+      });
+      const data = await res.json();
+      setMessages((m) => [
+        ...m,
+        { role: "engram", text: data.answer, sources: data.sources?.map((s: { source: string }) => s.source) },
+      ]);
+    } catch {
+      setMessages((m) => [
+        ...m,
+        { role: "engram", text: "⚠️ Couldn't reach your memory backend on " + API_BASE },
+      ]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -95,6 +102,17 @@ function AppPage() {
         {/* Left: chat */}
         <div className="w-[58%] flex flex-col border-r border-[#1f1f1f] min-h-0">
           <div className="flex-1 overflow-y-auto px-8 py-6 space-y-5">
+            {messages.length === 0 && !loading && (
+              <div className="h-full flex flex-col items-center justify-center text-center px-8">
+                <div className="w-12 h-12 rounded-2xl bg-[#7c3aed]/10 border border-[#7c3aed]/20 flex items-center justify-center mb-4">
+                  <Brain className="w-6 h-6 text-[#a78bfa]" />
+                </div>
+                <p className="text-white/80 font-medium">Ask your second brain</p>
+                <p className="text-sm text-[#6b7280] mt-1 max-w-sm">
+                  Everything you've ingested is queryable. Try “What did I work on in LangGraph?”
+                </p>
+              </div>
+            )}
             {messages.map((m, i) => (
               <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                 {m.role === "user" ? (
@@ -102,12 +120,12 @@ function AppPage() {
                     {m.text}
                   </div>
                 ) : (
-                  <div className="max-w-[80%] card-engram p-4 border-l-2 border-l-[#06b6d4]">
-                    <p className="text-sm leading-relaxed text-white/90">{m.text}</p>
-                    {m.sources && (
+                  <div className="max-w-[85%] card-engram p-4 border-l-2 border-l-[#06b6d4]">
+                    <p className="text-sm leading-relaxed text-white/90 whitespace-pre-wrap">{m.text}</p>
+                    {m.sources && m.sources.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-1.5">
                         {m.sources.map((s) => (
-                          <span key={s} className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${sourceColors[s]}`}>
+                          <span key={s} className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${sourceColors[s] ?? sourceColors.medium}`}>
                             {s}
                           </span>
                         ))}
@@ -117,6 +135,14 @@ function AppPage() {
                 )}
               </div>
             ))}
+            {loading && (
+              <div className="flex justify-start">
+                <div className="card-engram p-4 border-l-2 border-l-[#06b6d4] flex items-center gap-2 text-sm text-[#9ca3af]">
+                  <Loader2 className="w-4 h-4 animate-spin text-[#a78bfa]" />
+                  Searching your memory…
+                </div>
+              </div>
+            )}
           </div>
           <form onSubmit={send} className="p-4 border-t border-[#1f1f1f] shrink-0">
             <div className="flex items-center gap-2 card-engram px-3 py-2 focus-within:border-[#7c3aed]/50 transition-colors">
@@ -126,8 +152,8 @@ function AppPage() {
                 placeholder="Ask anything you've learned..."
                 className="flex-1 bg-transparent outline-none text-sm placeholder:text-[#6b7280] px-2"
               />
-              <button type="submit" className="btn-violet w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
-                <Send className="w-4 h-4" />
+              <button type="submit" disabled={loading || !input.trim()} className="btn-violet w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </button>
             </div>
           </form>
