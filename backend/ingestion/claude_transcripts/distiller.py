@@ -50,7 +50,7 @@ def build_distiller():
     )
 
 
-def chunk_conversation(conversation: str, max_chars: int = 12000) -> list[str]:
+def chunk_conversation(conversation: str, max_chars: int = 48000) -> list[str]:
     """Split a long conversation on turn boundaries so it fits the model context."""
     if len(conversation) <= max_chars:
         return [conversation]
