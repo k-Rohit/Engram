@@ -6,6 +6,7 @@ Run directly:  python backend/ingestion/claude_transcripts/distiller.py
 import os
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
@@ -14,7 +15,7 @@ from langchain_openai import ChatOpenAI
 
 from backend.config import DistillationLLMSettings
 from backend.models.claude_transcripts.distillation import Card, Cards
-from backend.ingestion.claude_transcripts.client import clean_all_sessions
+from backend.ingestion.claude_transcripts.factory import get_client
 
 load_dotenv()
 _settings = DistillationLLMSettings()
@@ -41,7 +42,7 @@ def build_distiller():
     llm = ChatOpenAI(
         model=_settings.dis_llm_model,
         base_url=_settings.base_url,
-        api_key=os.getenv("OPENROUTER_API_KEY"),
+        api_key=os.getenv(_settings.api_key_env),
         temperature=_settings.temperature,
     )
     return llm.with_structured_output(Cards, method="json_schema").with_retry(
@@ -71,13 +72,15 @@ def distill_conversation(conversation: str) -> list[Card]:
     cards: list[Card] = []
     for chunk in chunk_conversation(conversation):
         result: Cards = distiller.invoke(DISTILL_PROMPT + chunk)
-        cards.extend(result.cards)
+        for card in result.cards:
+            card.id = str(uuid4())  # our own id, never the LLM's
+            cards.append(card)
     return cards
 
 
 if __name__ == "__main__":
-    # Demo on ONE small session so we don't hammer the free model's rate limit.
-    sessions = clean_all_sessions()
+    # Demo on ONE small session.
+    sessions = get_client().clean_all_sessions()
     demo = next(
         (s for s in sessions if 8 <= len(s["turns"]) <= 14),
         min(sessions, key=lambda s: len(s["turns"])),

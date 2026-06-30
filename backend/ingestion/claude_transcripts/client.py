@@ -1,6 +1,7 @@
-"""Step 1 — turn raw Claude Code transcripts into clean, ordered conversations.
+"""Step 1 — read & clean Claude Code transcripts into ordered conversations.
 
-Run directly:  python backend/ingestion/claude_transcripts/client.py
+The `ClaudeTranscriptsClient` is the service object; get the singleton instance
+from `factory.get_client()`.
 """
 
 import sys
@@ -18,10 +19,7 @@ _NOISE_TAGS = (
     "command-name", "command-message", "local-command-caveat",
     "bash-input", "bash-stdout", "bash-stderr",
 )
-_NOISE_RE = re.compile(
-    r"<(" + "|".join(_NOISE_TAGS) + r")>.*?</\1>",
-    re.DOTALL,
-)
+_NOISE_RE = re.compile(r"<(" + "|".join(_NOISE_TAGS) + r")>.*?</\1>", re.DOTALL)
 
 
 def get_transcript_path() -> Path:
@@ -29,22 +27,12 @@ def get_transcript_path() -> Path:
     return Path.home() / ".claude" / "projects"
 
 
-def list_sessions() -> list[Path]:
-    """All session files, one level deep (skips memory/ and tool-results/)."""
-    return sorted(get_transcript_path().glob("*/*.jsonl"))
-
-
 def _clean(text: str) -> str:
-    """Drop IDE/command wrapper tags and trim."""
     return _NOISE_RE.sub("", text).strip()
 
 
 def extract_text(event: dict) -> str:
-    """Pull human-readable text from a user/assistant event.
-
-    Handles both content shapes: a plain string, or a list of blocks (we keep
-    only `text` blocks — `thinking`, `tool_use`, `tool_result` are dropped).
-    """
+    """Pull human-readable text from a user/assistant event (both content shapes)."""
     content = event.get("message", {}).get("content")
     if isinstance(content, str):
         return _clean(content)
@@ -69,60 +57,62 @@ def project_label(session_path: Path) -> str:
     return session_path.parent.name
 
 
-def clean_session(session_path: Path) -> dict:
-    """Parse one session into ordered, fluff-free turns + a formatted conversation."""
-    turns: list[dict] = []
-    session_id: str | None = None
+class ClaudeTranscriptsClient:
+    """Reads and cleans Claude Code transcripts. Instantiate via factory.get_client()."""
 
-    for line in session_path.open(encoding="utf-8"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    def __init__(self) -> None:
+        self.root = get_transcript_path()
 
-        if event.get("type") not in ("user", "assistant"):
-            continue
-        if event.get("isMeta"):
-            continue
+    def list_sessions(self) -> list[Path]:
+        """All session files, one level deep (skips memory/ and tool-results/)."""
+        return sorted(self.root.glob("*/*.jsonl"))
 
-        text = extract_text(event)
-        if not text:                       # tool_result / thinking-only lines
-            continue
+    def clean_session(self, session_path: Path) -> dict:
+        """Parse one session into ordered, fluff-free turns + a formatted conversation."""
+        turns: list[dict] = []
+        session_id: str | None = None
 
-        session_id = session_id or event.get("sessionId")
-        turns.append({"role": event["message"]["role"], "text": text})
+        for line in session_path.open(encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
-    conversation = "\n\n".join(f"{t['role'].title()}: {t['text']}" for t in turns)
-    return {
-        "project": project_label(session_path),
-        "session_id": session_id or session_path.stem,
-        "source": "claude_code",
-        "turns": turns,
-        "conversation": conversation,
-    }
+            if event.get("type") not in ("user", "assistant"):
+                continue
+            if event.get("isMeta"):
+                continue
 
+            text = extract_text(event)
+            if not text:                       # tool_result / thinking-only lines
+                continue
 
-def clean_all_sessions() -> list[dict]:
-    """Clean every session that has real conversation in it."""
-    out = []
-    for path in list_sessions():
-        cleaned = clean_session(path)
-        if cleaned["turns"]:
-            out.append(cleaned)
-    return out
+            session_id = session_id or event.get("sessionId")
+            turns.append({"role": event["message"]["role"], "text": text})
+
+        conversation = "\n\n".join(f"{t['role'].title()}: {t['text']}" for t in turns)
+        return {
+            "project": project_label(session_path),
+            "session_id": session_id or session_path.stem,
+            "source": "claude_code",
+            "turns": turns,
+            "conversation": conversation,
+        }
+
+    def clean_all_sessions(self) -> list[dict]:
+        """Clean every session that has real conversation, smallest first."""
+        out = [self.clean_session(p) for p in self.list_sessions()]
+        out = [s for s in out if s["turns"]]
+        return sorted(out, key=lambda s: len(s["turns"]))
 
 
 if __name__ == "__main__":
-    sessions = clean_all_sessions()
+    from backend.ingestion.claude_transcripts.factory import get_client
+
+    sessions = get_client().clean_all_sessions()
     print(f"Cleaned {len(sessions)} sessions\n")
     for s in sessions:
         print(f"  {s['project']:24} {len(s['turns']):4} turns  ({s['session_id'][:8]})")
-
-    # Show a sample so you can eyeball the quality
-    if sessions:
-        sample = min(sessions, key=lambda s: len(s["turns"]))
-        print("\n--- sample cleaned conversation:", sample["project"], "---")
-        print(sample["conversation"][:900])

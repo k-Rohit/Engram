@@ -1,6 +1,7 @@
 """Pydantic models for the distilled output of a Claude Code conversation."""
 
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field
 class Card(BaseModel):
     """One atomic insight distilled from a conversation."""
 
+    id: str = Field(default_factory=lambda: str(uuid4()))
     kind: Literal["concept", "problem_solution", "decision"] = Field(
         description=(
             "concept = a conceptual question/doubt the user asked + its explanation; "
