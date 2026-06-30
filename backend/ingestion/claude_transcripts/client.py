@@ -42,6 +42,11 @@ def extract_text(event: dict) -> str:
     return ""
 
 
+def format_conversation(turns: list[dict]) -> str:
+    """Render a list of turns into a `User: … / Assistant: …` conversation string."""
+    return "\n\n".join(f"{t['role'].title()}: {t['text']}" for t in turns)
+
+
 def project_label(session_path: Path) -> str:
     """Real project name, read from the `cwd` field inside the session."""
     for line in session_path.open(encoding="utf-8"):
@@ -93,7 +98,7 @@ class ClaudeTranscriptsClient:
             session_id = session_id or event.get("sessionId")
             turns.append({"role": event["message"]["role"], "text": text})
 
-        conversation = "\n\n".join(f"{t['role'].title()}: {t['text']}" for t in turns)
+        conversation = format_conversation(turns)
         return {
             "project": project_label(session_path),
             "session_id": session_id or session_path.stem,

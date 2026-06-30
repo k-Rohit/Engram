@@ -18,9 +18,20 @@ Run this SQL once in the Supabase SQL editor to create the table:
         created_at  timestamptz default now()
     );
     create index if not exists cards_session_id_idx on public.cards (session_id);
+
+And this `sessions` watermark table (tracks how many turns of each session are
+already distilled, so re-runs only process newly-appended turns):
+
+    create table if not exists public.sessions (
+        session_id      text primary key,
+        project         text,
+        distilled_turns int not null default 0,
+        updated_at      timestamptz default now()
+    );
 """
 
 import os
+from datetime import datetime, timezone
 from functools import lru_cache
 
 from dotenv import load_dotenv
@@ -43,6 +54,24 @@ def get_distilled_session_ids() -> set[str]:
     """Session ids already distilled & stored — used to skip re-distillation."""
     res = get_client().table(TABLE).select("session_id").execute()
     return {row["session_id"] for row in res.data}
+
+
+def get_session_watermarks() -> dict[str, int]:
+    """{session_id: distilled_turns} — how many turns of each session are done."""
+    res = get_client().table("sessions").select("session_id,distilled_turns").execute()
+    return {row["session_id"]: row["distilled_turns"] for row in res.data}
+
+
+def set_watermark(session_id: str, project: str, distilled_turns: int) -> None:
+    """Upsert how many turns of a session have now been distilled."""
+    get_client().table("sessions").upsert(
+        {
+            "session_id": session_id,
+            "project": project,
+            "distilled_turns": distilled_turns,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ).execute()
 
 
 def save_cards(session: dict, cards: list) -> int:
