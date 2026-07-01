@@ -1,10 +1,12 @@
-"""Unified Cognee graph: pull cards + notes from Supabase into ONE graph.
+"""Unified Cognee graph — the second brain.
 
-This is the "second brain" — every source lives in one graph so recall can
-connect concepts across sources (Cognee's headline feature).
+- Claude transcripts: clean -> distill -> cards (in Supabase, because distilling
+  is expensive and worth persisting) -> fed here.
+- Notion & Gmail: fetched and handed STRAIGHT to remember(). Cognee chunks,
+  extracts entities, and dedups natively — no chunking/Supabase glue needed.
 
-Ingest:  python backend/memory/cognee_client.py
-Ask:     from backend.memory.cognee_client import ask
+Build:  python backend/memory/cognee_client.py
+Ask:    from backend.memory.cognee_client import ask
 """
 
 import os
@@ -12,9 +14,7 @@ import sys
 import asyncio
 from pathlib import Path
 
-# Single-user: no per-user access control (must be set before cognee is used).
 os.environ.setdefault("ENABLE_BACKEND_ACCESS_CONTROL", "false")
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from dotenv import load_dotenv
@@ -23,7 +23,10 @@ load_dotenv()
 
 import cognee
 
+from backend.config import NEWSLETTER_SENDERS
 from backend.db.supabase_client import get_client
+from backend.ingestion.notion.factory import get_client as get_notion_client
+from backend.ingestion.gmail.factory import get_client as get_gmail_client
 
 DATASET = "engram"
 DATA_DIR = str(Path(__file__).resolve().parents[2] / "cognee_data")
@@ -31,10 +34,9 @@ DATA_DIR = str(Path(__file__).resolve().parents[2] / "cognee_data")
 
 def configure() -> None:
     cognee.config.set_llm_api_key(os.getenv("LLM_API_KEY"))
-    # Cheap models: gpt-4o-mini for cognify/recall, small embeddings (6.5x cheaper).
     cognee.config.set_llm_model("openai/gpt-4o-mini")
     cognee.config.set_embedding_model("openai/text-embedding-3-small")
-    cognee.config.set_embedding_dimensions(1536)  # 3-small is 1536-dim (not 3072)
+    cognee.config.set_embedding_dimensions(1536)  # 3-small is 1536-dim
     cognee.config.data_root_directory(DATA_DIR)
 
 
@@ -45,62 +47,50 @@ def _card_doc(c: dict) -> str:
     )
 
 
-def _note_doc(n: dict) -> str:
-    return f"[Source: notion] [Title: {n['title']}]\n{n['content']}"
+def _page_doc(p: dict) -> str:
+    return f"[Source: notion] [Title: {p['title']}]\n\n{p['content']}"
 
 
 def _email_doc(e: dict) -> str:
-    return f"[Source: gmail] [From: {e['sender']}] [Subject: {e['subject']}]\n{e['content']}"
+    return f"[Source: gmail] [From: {e['sender']}] [Subject: {e['subject']}]\n\n{e['body']}"
 
 
-def _rows(sb, table: str, **eq) -> list[dict]:
-    """Fetch rows, tolerating a table that doesn't exist yet."""
+def _cards() -> list[dict]:
     try:
-        q = sb.table(table).select("*")
-        for k, v in eq.items():
-            q = q.eq(k, v)
-        return q.execute().data
+        return (
+            get_client().table("cards").select("*")
+            .eq("project", "Arxiv_Paper_Curator").execute().data
+        )
     except Exception:
         return []
 
 
-async def ingest_unified() -> None:
-    """Fresh single graph from Arxiv cards + Notion notes + Gmail newsletters."""
+async def build_graph(reset: bool = True) -> None:
+    """Build the unified graph from all three sources (Cognee does the chunking)."""
     configure()
-    sb = get_client()
-    cards = _rows(sb, "cards", project="Arxiv_Paper_Curator")
-    notes = _rows(sb, "notes")
-    emails = _rows(sb, "emails")
-    docs = (
-        [_card_doc(c) for c in cards]
-        + [_note_doc(n) for n in notes]
-        + [_email_doc(e) for e in emails]
-    )
 
-    print(f"clean slate + ingesting {len(cards)} Arxiv cards + {len(notes)} notes "
-          f"+ {len(emails)} email chunks = {len(docs)} docs into ONE graph ('{DATASET}')…")
-    await cognee.forget(everything=True)
+    card_docs = [_card_doc(c) for c in _cards()]                      # Claude (Supabase)
+    pages = get_notion_client().extract_workspace()                  # Notion (direct)
+    page_docs = [_page_doc(p) for p in pages if (p.get("content") or "").strip()]
+    emails = get_gmail_client().fetch_from_senders(NEWSLETTER_SENDERS)  # Gmail (direct)
+    email_docs = [_email_doc(e) for e in emails]
+
+    docs = card_docs + page_docs + email_docs
+    print(f"ingesting {len(card_docs)} cards + {len(page_docs)} Notion pages "
+          f"+ {len(email_docs)} emails = {len(docs)} docs into '{DATASET}'…")
+
+    if reset:
+        # Native full reset — required when embedding dimensions change (rebuilds
+        # the vector store at the new dim). Not rm -rf.
+        await cognee.prune.prune_data()
+        await cognee.prune.prune_system(metadata=True)
+
     await cognee.remember(docs, dataset_name=DATASET)
     print("done — unified graph built.")
 
 
-async def add_emails() -> None:
-    """Append ONLY Gmail chunks to the existing graph — no forget, so you don't
-    re-embed/re-cognify the cards + notes already in the graph (saves cost)."""
-    configure()
-    sb = get_client()
-    emails = _rows(sb, "emails")
-    if not emails:
-        print("no emails in Supabase yet — run the gmail pipeline first.")
-        return
-    docs = [_email_doc(e) for e in emails]
-    print(f"adding {len(docs)} email chunks to the existing graph (cards/notes untouched)…")
-    await cognee.remember(docs, dataset_name=DATASET)  # NO forget => appends
-    print("done.")
-
-
 async def ask(query: str) -> str:
-    """Unified recall across the whole brain (no dataset silo)."""
+    """Unified recall across the whole brain."""
     configure()
     results = await cognee.recall(
         query, datasets=[DATASET], context_profile="qa", include_references=True
@@ -109,4 +99,4 @@ async def ask(query: str) -> str:
 
 
 if __name__ == "__main__":
-    asyncio.run(ingest_unified())
+    asyncio.run(build_graph())
