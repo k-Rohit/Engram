@@ -28,6 +28,20 @@ already distilled, so re-runs only process newly-appended turns):
         distilled_turns int not null default 0,
         updated_at      timestamptz default now()
     );
+
+And this `notes` table for Notion note chunks (kept verbatim, not distilled):
+
+    create table if not exists public.notes (
+        id          uuid primary key,
+        page_id     text not null,
+        title       text,
+        chunk_index int,
+        content     text not null,
+        tags        text[] default '{}',
+        source      text default 'notion',
+        created_at  timestamptz default now()
+    );
+    create index if not exists notes_page_id_idx on public.notes (page_id);
 """
 
 import os
@@ -54,6 +68,32 @@ def get_distilled_session_ids() -> set[str]:
     """Session ids already distilled & stored — used to skip re-distillation."""
     res = get_client().table(TABLE).select("session_id").execute()
     return {row["session_id"] for row in res.data}
+
+
+def get_ingested_page_ids() -> set[str]:
+    """Notion page_ids already chunked & stored — used to skip re-ingesting."""
+    res = get_client().table("notes").select("page_id").execute()
+    return {row["page_id"] for row in res.data}
+
+
+def save_notes(chunks: list) -> int:
+    """Insert Notion note chunks. Returns number of rows written."""
+    if not chunks:
+        return 0
+    rows = [
+        {
+            "id": c.id,
+            "page_id": c.page_id,
+            "title": c.title,
+            "chunk_index": c.chunk_index,
+            "content": c.content,
+            "tags": c.tags,
+            "source": c.source,
+        }
+        for c in chunks
+    ]
+    get_client().table("notes").insert(rows).execute()
+    return len(rows)
 
 
 def get_session_watermarks() -> dict[str, int]:
