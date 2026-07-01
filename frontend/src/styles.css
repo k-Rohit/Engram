@@ -155,3 +155,42 @@
 @utility blob-animate {
   animation: blob-drift 18s ease-in-out infinite;
 }
+
+/* Markdown-rendered answer bubble */
+.md-answer {
+  font-size: 0.875rem;
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.9);
+}
+.md-answer > *:first-child { margin-top: 0; }
+.md-answer > *:last-child { margin-bottom: 0; }
+.md-answer p { margin: 0 0 0.6rem; }
+.md-answer ul, .md-answer ol { margin: 0.4rem 0 0.7rem; padding-left: 1.25rem; }
+.md-answer ul { list-style: disc; }
+.md-answer ol { list-style: decimal; }
+.md-answer li { margin: 0.2rem 0; }
+.md-answer strong { color: #fff; font-weight: 600; }
+.md-answer h1, .md-answer h2, .md-answer h3 {
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin: 0.85rem 0 0.4rem;
+}
+.md-answer a { color: #a78bfa; text-decoration: underline; }
+.md-answer code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.82em;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #c4b5fd;
+}
+.md-answer pre {
+  background: #0d0d0d;
+  border: 1px solid #1f1f1f;
+  border-radius: 8px;
+  padding: 0.75rem;
+  overflow-x: auto;
+  margin: 0.6rem 0;
+}
+.md-answer pre code { background: none; padding: 0; color: #e5e7eb; }

@@ -1,18 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import {
-  Brain,
-  Upload,
-  HardDrive,
-  Link as LinkIcon,
-  Send,
-  ChevronDown,
-  Plus,
-  Loader2,
-  Check,
-  RefreshCw,
-  FileText,
-} from "lucide-react";
+import { useState } from "react";
+import { Brain, FileText, Mail, Send, Loader2, Check, Sparkles } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 
 const API_BASE = "http://localhost:8090";
 
@@ -28,30 +17,31 @@ export const Route = createFileRoute("/app")({
 
 type Msg = { role: "user" | "engram"; text: string; sources?: string[] };
 
-const sourceColors: Record<string, string> = {
-  claude_code: "bg-[#7c3aed]/15 text-[#a78bfa] border-[#7c3aed]/30",
-  chatgpt: "bg-[#06b6d4]/15 text-[#67e8f9] border-[#06b6d4]/30",
-  medium: "bg-white/5 text-[#9ca3af] border-white/10",
-  google_drive: "bg-[#06b6d4]/10 text-[#22d3ee] border-[#06b6d4]/20",
+const sourceMeta: Record<string, { label: string; cls: string }> = {
+  claude_code: { label: "Claude Code", cls: "bg-[#7c3aed]/15 text-[#a78bfa] border-[#7c3aed]/30" },
+  notion: { label: "Notion", cls: "bg-white/5 text-[#e5e7eb] border-white/15" },
+  gmail: { label: "Gmail", cls: "bg-[#ef4444]/12 text-[#fca5a5] border-[#ef4444]/25" },
 };
 
-type ClaudeProject = {
-  id: string;
-  name: string;
-  dataset: string;
-  sessions: number;
-  lines: number;
-  ingested: boolean;
-};
+const CONNECTED = [
+  { key: "claude_code", icon: Brain, label: "Claude Code", desc: "Distilled coding sessions" },
+  { key: "notion", icon: FileText, label: "Notion", desc: "Your written notes" },
+  { key: "gmail", icon: Mail, label: "Gmail", desc: "AI / tech newsletters" },
+];
+
+const SUGGESTIONS = [
+  "What did I learn about chunking for RAG?",
+  "How do I keep a knowledge graph consistent?",
+  "What did I decide about running Docker services?",
+];
 
 function AppPage() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const send = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const q = input.trim();
+  const ask = async (question: string) => {
+    const q = question.trim();
     if (!q || loading) return;
     setMessages((m) => [...m, { role: "user", text: q }]);
     setInput("");
@@ -60,17 +50,14 @@ function AppPage() {
       const res = await fetch(`${API_BASE}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project: "personal-brain", question: q }),
+        body: JSON.stringify({ question: q }),
       });
       const data = await res.json();
-      setMessages((m) => [
-        ...m,
-        { role: "engram", text: data.answer, sources: data.sources?.map((s: { source: string }) => s.source) },
-      ]);
+      setMessages((m) => [...m, { role: "engram", text: data.answer, sources: data.sources ?? [] }]);
     } catch {
       setMessages((m) => [
         ...m,
-        { role: "engram", text: "⚠️ Couldn't reach your memory backend on " + API_BASE },
+        { role: "engram", text: "⚠️ Couldn't reach your brain on " + API_BASE + " — is the API running?" },
       ]);
     } finally {
       setLoading(false);
@@ -85,32 +72,38 @@ function AppPage() {
           <span className="w-2 h-2 rounded-full bg-[#7c3aed] shadow-[0_0_12px_#7c3aed]" />
           Engram
         </Link>
-        <div className="flex items-center gap-3">
-          <button className="flex items-center gap-2 text-sm text-[#9ca3af] hover:text-white px-3 py-1.5 rounded-lg border border-[#1f1f1f] hover:border-[#7c3aed]/50 transition cursor-pointer">
-            personal-brain
-            <ChevronDown className="w-4 h-4" />
-          </button>
-          <button className="btn-violet px-3 py-1.5 rounded-lg text-sm flex items-center gap-1.5">
-            <Plus className="w-4 h-4" />
-            New Project
-          </button>
+        <div className="flex items-center gap-2 text-xs text-[#6b7280]">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+          brain online
         </div>
       </header>
 
       {/* Two panels */}
       <div className="flex-1 flex min-h-0">
         {/* Left: chat */}
-        <div className="w-[58%] flex flex-col border-r border-[#1f1f1f] min-h-0">
+        <div className="flex-1 flex flex-col border-r border-[#1f1f1f] min-h-0">
           <div className="flex-1 overflow-y-auto px-8 py-6 space-y-5">
             {messages.length === 0 && !loading && (
               <div className="h-full flex flex-col items-center justify-center text-center px-8">
-                <div className="w-12 h-12 rounded-2xl bg-[#7c3aed]/10 border border-[#7c3aed]/20 flex items-center justify-center mb-4">
-                  <Brain className="w-6 h-6 text-[#a78bfa]" />
+                <div className="w-14 h-14 rounded-2xl bg-[#7c3aed]/10 border border-[#7c3aed]/20 flex items-center justify-center mb-5">
+                  <Brain className="w-7 h-7 text-[#a78bfa]" />
                 </div>
-                <p className="text-white/80 font-medium">Ask your second brain</p>
-                <p className="text-sm text-[#6b7280] mt-1 max-w-sm">
-                  Everything you've ingested is queryable. Try “What did I work on in LangGraph?”
+                <p className="text-lg text-white font-medium">Ask your second brain</p>
+                <p className="text-sm text-[#6b7280] mt-1.5 max-w-md">
+                  Everything from your code, notes, and reading — connected in one graph.
                 </p>
+                <div className="mt-6 flex flex-col gap-2 w-full max-w-md">
+                  {SUGGESTIONS.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => ask(s)}
+                      className="text-left text-sm text-[#9ca3af] hover:text-white border border-[#1f1f1f] hover:border-[#7c3aed]/40 rounded-xl px-4 py-2.5 transition cursor-pointer flex items-center gap-2"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-[#7c3aed] shrink-0" />
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {messages.map((m, i) => (
@@ -121,12 +114,18 @@ function AppPage() {
                   </div>
                 ) : (
                   <div className="max-w-[85%] card-engram p-4 border-l-2 border-l-[#06b6d4]">
-                    <p className="text-sm leading-relaxed text-white/90 whitespace-pre-wrap">{m.text}</p>
+                    <div className="md-answer">
+                      <ReactMarkdown>{m.text}</ReactMarkdown>
+                    </div>
                     {m.sources && m.sources.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-1.5">
+                        <span className="text-[10px] text-[#6b7280] mr-1 self-center">sources:</span>
                         {m.sources.map((s) => (
-                          <span key={s} className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${sourceColors[s] ?? sourceColors.medium}`}>
-                            {s}
+                          <span
+                            key={s}
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${sourceMeta[s]?.cls ?? "bg-white/5 text-[#9ca3af] border-white/10"}`}
+                          >
+                            {sourceMeta[s]?.label ?? s}
                           </span>
                         ))}
                       </div>
@@ -144,7 +143,13 @@ function AppPage() {
               </div>
             )}
           </div>
-          <form onSubmit={send} className="p-4 border-t border-[#1f1f1f] shrink-0">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              ask(input);
+            }}
+            className="p-4 border-t border-[#1f1f1f] shrink-0"
+          >
             <div className="flex items-center gap-2 card-engram px-3 py-2 focus-within:border-[#7c3aed]/50 transition-colors">
               <input
                 value={input}
@@ -152,157 +157,48 @@ function AppPage() {
                 placeholder="Ask anything you've learned..."
                 className="flex-1 bg-transparent outline-none text-sm placeholder:text-[#6b7280] px-2"
               />
-              <button type="submit" disabled={loading || !input.trim()} className="btn-violet w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
+              <button
+                type="submit"
+                disabled={loading || !input.trim()}
+                className="btn-violet w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+              >
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </button>
             </div>
           </form>
         </div>
 
-        {/* Right: memory sources */}
-        <aside className="w-[42%] flex flex-col min-h-0 bg-[#0b0b0b]">
+        {/* Right: connected sources */}
+        <aside className="w-[320px] flex flex-col min-h-0 bg-[#0b0b0b]">
           <div className="px-6 py-4 border-b border-[#1f1f1f] shrink-0">
-            <h2 className="text-sm font-semibold text-white">Memory Sources</h2>
-            <p className="text-xs text-[#6b7280] mt-0.5">Feed your second brain — ingest from any source.</p>
+            <h2 className="text-sm font-semibold text-white">Connected Sources</h2>
+            <p className="text-xs text-[#6b7280] mt-0.5">All feeding one unified graph.</p>
           </div>
-
-          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-7">
-            {/* Connect a source */}
-            <section>
-              <h3 className="text-[11px] uppercase tracking-widest text-[#6b7280] mb-3">Connect a source</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <SourceCard icon={Brain} label="Claude Code" hint="Sync transcripts" />
-                <SourceCard icon={Upload} label="ChatGPT" hint="Upload export" />
-                <SourceCard icon={HardDrive} label="Google Drive" hint="Sync docs" />
-                <SourceCard icon={LinkIcon} label="Article / URL" hint="Paste a link" />
+          <div className="flex-1 overflow-y-auto px-4 py-5 space-y-3">
+            {CONNECTED.map((s) => (
+              <div
+                key={s.key}
+                className="flex items-center gap-3 px-3.5 py-3 rounded-xl border border-[#1f1f1f] bg-[#101010]"
+              >
+                <span className="w-10 h-10 rounded-xl bg-[#7c3aed]/10 border border-[#7c3aed]/20 flex items-center justify-center shrink-0">
+                  <s.icon className="w-5 h-5 text-[#a78bfa]" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-white">{s.label}</div>
+                  <div className="text-[11px] text-[#6b7280] truncate">{s.desc}</div>
+                </div>
+                <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-400 shrink-0">
+                  <Check className="w-3.5 h-3.5" /> live
+                </span>
               </div>
-            </section>
-
-            {/* Claude Code sessions */}
-            <ClaudeSessions />
+            ))}
+            <p className="text-[11px] text-[#4b5563] px-1 pt-2 leading-relaxed">
+              Your code, notes, and reading are distilled into one Cognee knowledge graph — so answers
+              connect across all of them.
+            </p>
           </div>
         </aside>
       </div>
     </div>
-  );
-}
-
-function SourceCard({ icon: Icon, label, hint }: { icon: any; label: string; hint: string }) {
-  return (
-    <button className="source-card group p-4 flex flex-col items-start gap-3 text-left">
-      <span className="w-10 h-10 rounded-xl bg-[#7c3aed]/10 border border-[#7c3aed]/20 flex items-center justify-center group-hover:bg-[#7c3aed]/20 transition-colors">
-        <Icon className="w-5 h-5 text-[#a78bfa]" />
-      </span>
-      <span className="min-w-0">
-        <span className="block text-sm font-medium text-white truncate">{label}</span>
-        <span className="block text-[11px] text-[#6b7280] truncate">{hint}</span>
-      </span>
-    </button>
-  );
-}
-
-function ClaudeSessions() {
-  const [projects, setProjects] = useState<ClaudeProject[] | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/claude/projects`);
-      setProjects(await res.json());
-      setError(null);
-    } catch {
-      setError(`Can't reach the Engram backend on ${API_BASE}`);
-    }
-  };
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  const ingest = async (p: ClaudeProject) => {
-    setBusy(p.id);
-    try {
-      await fetch(`${API_BASE}/ingest/claude-code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_project: p.id }),
-      });
-      await load();
-    } catch {
-      setError(`Ingest failed for ${p.name}`);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const ingestedCount = projects?.filter((p) => p.ingested).length ?? 0;
-
-  return (
-    <section>
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-[11px] uppercase tracking-widest text-[#6b7280]">
-          Claude Code sessions
-          {projects && (
-            <span className="ml-2 text-[#a78bfa] normal-case tracking-normal">
-              {ingestedCount}/{projects.length} ingested
-            </span>
-          )}
-        </h3>
-        <button
-          onClick={load}
-          className="flex items-center gap-1 text-[11px] text-[#6b7280] hover:text-white transition cursor-pointer"
-        >
-          <RefreshCw className="w-3 h-3" /> refresh
-        </button>
-      </div>
-
-      {error && (
-        <div className="text-[12px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 mb-3">
-          {error}
-        </div>
-      )}
-      {!projects && !error && (
-        <div className="flex items-center gap-2 text-[12px] text-[#6b7280] px-1 py-2">
-          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading projects…
-        </div>
-      )}
-
-      <div className="space-y-2">
-        {projects?.map((p) => (
-          <div
-            key={p.id}
-            className="flex items-center justify-between gap-3 px-3.5 py-3 rounded-xl border border-[#1f1f1f] bg-[#101010] hover:border-[#7c3aed]/30 hover:bg-[#141414] transition-colors"
-          >
-            <div className="flex items-center gap-3 min-w-0">
-              <span className="w-9 h-9 rounded-lg bg-[#7c3aed]/10 border border-[#7c3aed]/20 flex items-center justify-center shrink-0">
-                <FileText className="w-4 h-4 text-[#a78bfa]" />
-              </span>
-              <div className="min-w-0">
-                <div className="text-sm text-white/90 font-medium truncate">{p.name}</div>
-                <div className="text-[11px] text-[#6b7280]">
-                  {p.sessions} session{p.sessions !== 1 ? "s" : ""} · {p.lines.toLocaleString()} lines
-                </div>
-              </div>
-            </div>
-
-            {p.ingested ? (
-              <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-2.5 py-1 shrink-0">
-                <Check className="w-3.5 h-3.5" /> Ingested
-              </span>
-            ) : (
-              <button
-                onClick={() => ingest(p)}
-                disabled={busy !== null}
-                className="btn-violet px-3 py-1.5 rounded-lg text-xs shrink-0 flex items-center gap-1.5"
-              >
-                {busy === p.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                {busy === p.id ? "Ingesting…" : "Ingest"}
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }

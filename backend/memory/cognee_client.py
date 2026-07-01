@@ -89,13 +89,21 @@ async def build_graph(reset: bool = True) -> None:
     print("done — unified graph built.")
 
 
-async def ask(query: str) -> str:
-    """Unified recall across the whole brain."""
+async def ask(query: str) -> dict:
+    """Unified recall across the whole brain. Returns {answer, sources}."""
+    import re
+
     configure()
     results = await cognee.recall(
         query, datasets=[DATASET], context_profile="qa", include_references=True
     )
-    return "\n\n".join(getattr(r, "text", "") for r in results if getattr(r, "text", ""))
+    text = "\n\n".join(getattr(r, "text", "") for r in results if getattr(r, "text", ""))
+    if "Evidence:" in text:
+        answer, evidence = text.split("Evidence:", 1)
+    else:
+        answer, evidence = text, ""
+    sources = sorted({s.strip() for s in re.findall(r"\[Source: ([^\]]+)\]", evidence)})
+    return {"answer": answer.strip() or "Nothing relevant found in your memory yet.", "sources": sources}
 
 
 if __name__ == "__main__":
