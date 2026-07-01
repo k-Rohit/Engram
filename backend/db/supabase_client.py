@@ -42,6 +42,22 @@ And this `notes` table for Notion note chunks (kept verbatim, not distilled):
         created_at  timestamptz default now()
     );
     create index if not exists notes_page_id_idx on public.notes (page_id);
+
+And this `emails` table for newsletter chunks (kept verbatim, not distilled):
+
+    create table if not exists public.emails (
+        id          uuid primary key,
+        message_id  text not null,
+        sender      text,
+        subject     text,
+        date        text,
+        chunk_index int,
+        content     text not null,
+        tags        text[] default '{}',
+        source      text default 'gmail',
+        created_at  timestamptz default now()
+    );
+    create index if not exists emails_message_id_idx on public.emails (message_id);
 """
 
 import os
@@ -93,6 +109,34 @@ def save_notes(chunks: list) -> int:
         for c in chunks
     ]
     get_client().table("notes").insert(rows).execute()
+    return len(rows)
+
+
+def get_ingested_message_ids() -> set[str]:
+    """Gmail Message-IDs already chunked & stored — used to skip re-ingesting."""
+    res = get_client().table("emails").select("message_id").execute()
+    return {row["message_id"] for row in res.data}
+
+
+def save_emails(chunks: list) -> int:
+    """Insert email chunks. Returns number of rows written."""
+    if not chunks:
+        return 0
+    rows = [
+        {
+            "id": c.id,
+            "message_id": c.message_id,
+            "sender": c.sender,
+            "subject": c.subject,
+            "date": c.date,
+            "chunk_index": c.chunk_index,
+            "content": c.content,
+            "tags": c.tags,
+            "source": c.source,
+        }
+        for c in chunks
+    ]
+    get_client().table("emails").insert(rows).execute()
     return len(rows)
 
 
