@@ -37,12 +37,13 @@ def check_health():
 
 class AskRequest(BaseModel):
     question: str
+    session_id: str | None = None
 
 
 @app.post("/ask")
 async def ask_endpoint(req: AskRequest):
     """Query the whole second brain; returns {answer, sources}."""
-    return await ask(req.question)
+    return await ask(req.question, session_id=req.session_id)
 
 
 if __name__ == "__main__":

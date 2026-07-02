@@ -89,13 +89,18 @@ async def build_graph(reset: bool = True) -> None:
     print("done — unified graph built.")
 
 
-async def ask(query: str) -> dict:
-    """Unified recall across the whole brain. Returns {answer, sources}."""
+async def ask(query: str, session_id: str | None = None) -> dict:
+    """Unified recall across the whole brain. Returns {answer, sources}.
+
+    `session_id` gives multi-turn conversational memory — Cognee's session cache
+    keeps prior turns so follow-ups like "both"/"that" resolve.
+    """
     import re
 
     configure()
     results = await cognee.recall(
-        query, datasets=[DATASET], context_profile="qa", include_references=True
+        query, datasets=[DATASET], context_profile="qa",
+        include_references=True, session_id=session_id,
     )
     text = "\n\n".join(getattr(r, "text", "") for r in results if getattr(r, "text", ""))
     if "Evidence:" in text:

@@ -39,6 +39,8 @@ function AppPage() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  // One session id per chat → Cognee session memory, so follow-ups keep context.
+  const [sessionId] = useState(() => crypto.randomUUID());
 
   const ask = async (question: string) => {
     const q = question.trim();
@@ -50,7 +52,7 @@ function AppPage() {
       const res = await fetch(`${API_BASE}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
+        body: JSON.stringify({ question: q, session_id: sessionId }),
       });
       const data = await res.json();
       setMessages((m) => [...m, { role: "engram", text: data.answer, sources: data.sources ?? [] }]);
