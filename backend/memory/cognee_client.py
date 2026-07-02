@@ -271,35 +271,64 @@ async def ask(query: str, session_id: str | None = None) -> dict:
     return {"answer": answer.strip() or "Nothing relevant found in your memory yet.", "sources": sources}
 
 
-def resurface() -> dict | None:
-    """Proactive recall — surface one past insight unprompted.
+async def wall(n: int = 24) -> dict:
+    """The Stacks — a browsable sample of the archive for rediscovery.
 
-    Pulls a random distilled card (favoring concepts/decisions, which age best),
-    with its date and project, so the UI can say "three weeks ago you…".
-    Pure Supabase — no LLM cost.
+    Mixes distilled cards (questions you asked, concepts, decisions — from
+    Supabase, no LLM cost) with entity concepts sampled from the graph itself
+    (which include newsletter/notion-derived concepts).
     """
     import random
 
+    cards = []
     try:
         rows = (
             get_client().table("cards")
             .select("kind,title,question,answer,project,session_date,created_at")
             .execute().data
         )
+        random.shuffle(rows)
+        for r in rows[: max(n - 8, n // 2)]:
+            cards.append({
+                "type": "card",
+                "kind": r["kind"],
+                "title": r["title"],
+                "question": r.get("question") or r["title"],
+                "answer": r["answer"],
+                "project": r.get("project"),
+                "date": _day(r.get("session_date") or r.get("created_at")),
+            })
     except Exception:
-        rows = []
-    if not rows:
-        return None
-    weighted = [r for r in rows if r["kind"] in ("concept", "decision")] or rows
-    card = random.choice(weighted)
-    return {
-        "kind": card["kind"],
-        "title": card["title"],
-        "question": card.get("question") or card["title"],
-        "answer": card["answer"],
-        "project": card.get("project"),
-        "date": _day(card.get("session_date") or card.get("created_at")),
-    }
+        pass
+
+    # Graph entity concepts (best-effort — includes gmail/notion-derived nodes).
+    concepts: list[dict] = []
+    try:
+        configure()
+        from cognee.infrastructure.databases.graph import get_graph_engine
+
+        engine = await get_graph_engine()
+        nodes, _ = await engine.get_graph_data()
+        names = set()
+        for node in nodes:
+            props = node[1] if isinstance(node, (list, tuple)) and len(node) > 1 else (
+                node if isinstance(node, dict) else {}
+            )
+            if not isinstance(props, dict):
+                continue
+            name = props.get("name")
+            ntype = str(props.get("type", ""))
+            if name and ntype == "Entity" and 3 <= len(str(name)) <= 48:
+                names.add(str(name))
+        for name in random.sample(sorted(names), min(8, len(names))):
+            concepts.append({"type": "concept", "title": name,
+                             "question": f"What do I know about {name}?"})
+    except Exception:
+        pass
+
+    items = cards + concepts
+    random.shuffle(items)
+    return {"items": items[:n]}
 
 
 def stats() -> dict:

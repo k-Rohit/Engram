@@ -25,15 +25,6 @@ type Stats = {
   total_docs: number;
 };
 
-type Resurfaced = {
-  kind: string;
-  title: string;
-  question: string;
-  answer: string;
-  project?: string;
-  date?: string;
-};
-
 const sourceLabel: Record<string, string> = {
   claude_code: "src: claude_code",
   notion: "src: notion",
@@ -63,7 +54,6 @@ function AppPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [note, setNote] = useState("");
   const [noteState, setNoteState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
-  const [memory, setMemory] = useState<Resurfaced | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const loadStats = async () => {
@@ -72,16 +62,6 @@ function AppPage() {
       setStats(await res.json());
     } catch {
       /* keep old stats */
-    }
-  };
-
-  const loadMemory = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/resurface`);
-      const data = await res.json();
-      setMemory(data?.title ? data : null);
-    } catch {
-      setMemory(null);
     }
   };
 
@@ -102,7 +82,12 @@ function AppPage() {
       }
     }
     loadStats();
-    loadMemory();
+    // Handoff from The Stacks: a card was clicked -> ask its question here.
+    const pending = localStorage.getItem("engram_pending_q");
+    if (pending) {
+      localStorage.removeItem("engram_pending_q");
+      ask(pending, sid);
+    }
   }, []);
 
   // Persist messages.
@@ -123,7 +108,7 @@ function AppPage() {
     setMessages([]);
   };
 
-  const ask = async (question: string) => {
+  const ask = async (question: string, sidOverride?: string) => {
     const q = question.trim();
     if (!q || loading) return;
     setMessages((m) => [...m, { role: "user", text: q }]);
@@ -133,7 +118,7 @@ function AppPage() {
       const res = await fetch(`${API_BASE}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, session_id: sessionId }),
+        body: JSON.stringify({ question: q, session_id: sidOverride ?? sessionId }),
       });
       const data = await res.json();
       setMessages((m) => [...m, { role: "engram", text: data.answer, sources: data.sources ?? [] }]);
@@ -220,6 +205,9 @@ function AppPage() {
             <span className="t-label hidden sm:block">
               {stats ? `${stats.total_docs} entries` : "archive online"}
             </span>
+            <Link to="/wall" className="t-label hover:!text-foreground transition-colors">
+              The stacks
+            </Link>
             <button onClick={newChat} className="btn-line px-3 py-1.5 flex items-center gap-1.5">
               <Plus className="w-3.5 h-3.5" /> New entry
             </button>
@@ -242,38 +230,6 @@ function AppPage() {
                   Your code sessions, notes and reading are one connected graph. Ask, then
                   follow up — it keeps the thread.
                 </p>
-
-                {memory && (
-                  <div className="mt-8 card-arc">
-                    <div className="px-4 py-2 border-b border-border flex items-center justify-between">
-                      <span className="t-label !text-amber">From your archive</span>
-                      <span className="t-label">
-                        {memory.date || "undated"}
-                        {memory.project ? ` · ${memory.project}` : ""}
-                      </span>
-                    </div>
-                    <div className="p-4">
-                      <p className="font-display text-lg leading-snug text-foreground">{memory.title}</p>
-                      <p className="mt-2 text-sm text-muted-foreground leading-relaxed line-clamp-3">
-                        {memory.answer}
-                      </p>
-                      <div className="mt-3 flex items-center gap-3">
-                        <button
-                          onClick={() => ask(memory.question)}
-                          className="btn-line px-3 py-1.5 flex items-center gap-1.5"
-                        >
-                          revisit this <ArrowUpRight className="w-3 h-3" />
-                        </button>
-                        <button
-                          onClick={loadMemory}
-                          className="t-label hover:!text-foreground transition-colors cursor-pointer flex items-center gap-1"
-                        >
-                          <RefreshCw className="w-3 h-3" /> another
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
 
                 <div className="mt-8 divide-y divide-border border-y border-border">
                   {SUGGESTIONS.map((s, i) => (
@@ -465,8 +421,8 @@ function AppPage() {
               </div>
             ))}
             <p className="t-label !normal-case !tracking-normal leading-relaxed px-1 pt-3">
-              Auto-sync runs hourly. Existing memory is never re-processed — only new entries
-              pass through the graph. Ratings reshape future recall.
+              Sync is manual — nothing runs in the background. Existing memory is never
+              re-processed; only new entries pass through the graph. Ratings reshape future recall.
             </p>
           </div>
         </aside>

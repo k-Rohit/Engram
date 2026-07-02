@@ -184,6 +184,24 @@
   animation: pulse-dot 2.4s ease-in-out infinite;
 }
 
+/* The Stacks: gentle vertical drift for floating memory cards */
+@keyframes stack-drift {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+.stack-card {
+  animation: stack-drift 7s ease-in-out infinite;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+.stack-card:hover {
+  animation-play-state: paused;
+  border-color: rgba(217, 165, 82, 0.6) !important;
+  transform: translateY(-3px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .stack-card { animation: none; }
+}
+
 /* ---------- Markdown-rendered answer ---------- */
 .md-answer {
   font-size: 0.9rem;

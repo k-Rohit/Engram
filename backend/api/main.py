@@ -17,9 +17,9 @@ from backend.memory.cognee_client import (
     capture_note,
     consolidate_feedback,
     record_feedback,
-    resurface,
     stats,
     sync,
+    wall,
 )
 from backend.ingestion.claude_transcripts.pipeline import run as distill_claude
 
@@ -57,10 +57,10 @@ def get_stats():
     return stats()
 
 
-@app.get("/resurface")
-def get_resurface():
-    """Proactive recall: one past insight, unprompted. Null if archive is empty."""
-    return resurface() or {}
+@app.get("/wall")
+async def get_wall(n: int = 24):
+    """The Stacks: a shuffled sample of cards + graph concepts for rediscovery."""
+    return await wall(n)
 
 
 class AskRequest(BaseModel):
@@ -134,9 +134,11 @@ async def sync_gmail():
     return await _run_sync("gmail")
 
 
-# ---------- auto-sync: the brain captures without being asked ----------
+# ---------- auto-sync (OPT-IN): personal project, so default OFF ----------
+# Every cycle costs OpenAI credits if there's new content (distillation +
+# embedding + cognify). Enable with e.g. AUTO_SYNC_MINUTES=60 if wanted.
 
-AUTO_SYNC_MINUTES = int(os.getenv("AUTO_SYNC_MINUTES", "60"))
+AUTO_SYNC_MINUTES = int(os.getenv("AUTO_SYNC_MINUTES", "0"))
 
 
 async def _auto_sync_loop():
@@ -155,7 +157,11 @@ async def _auto_sync_loop():
 
 @app.on_event("startup")
 async def _start_auto_sync():
-    asyncio.create_task(_auto_sync_loop())
+    if AUTO_SYNC_MINUTES > 0:
+        print(f"[auto-sync] enabled: every {AUTO_SYNC_MINUTES} min")
+        asyncio.create_task(_auto_sync_loop())
+    else:
+        print("[auto-sync] disabled — sync manually from the UI")
 
 
 if __name__ == "__main__":
