@@ -45,6 +45,18 @@ DATA_DIR = str(Path(__file__).resolve().parents[2] / "cognee_data")
 # How much answer feedback shapes future recall ranking (0 = ignore feedback).
 FEEDBACK_INFLUENCE = 0.3
 
+# Overrides Cognee's default QA prompt (which produces templated dumps or lazy
+# one-liners like "Got it."). Forces direct, grounded, dated answers.
+ENGRAM_SYSTEM_PROMPT = """You are the user's personal memory assistant. You are given excerpts from the user's own past conversations, notes, and reading.
+
+Answer the user's question DIRECTLY and CONCISELY, in plain prose. Rules:
+- Answer ONLY what was asked. If they ask "what did I ask about X", list the specific questions they asked about X.
+- Address the user as "you". A few sentences or a short bullet list.
+- Ground every statement in the provided memory; never invent. If the memory doesn't cover it, say so plainly.
+- Memory excerpts carry [Date: ...] tags — use them when the question involves time ("recently", "last month", "when did I").
+- Never reply with filler like "Got it." — always give substance or say the memory has nothing.
+"""
+
 # Old local ledger — kept only to migrate its keys into Supabase once.
 LEGACY_LEDGER = Path(__file__).resolve().parents[2] / "cognee_ingested.json"
 
@@ -87,11 +99,9 @@ def _email_doc(e: dict) -> str:
 
 
 def _cards() -> list[dict]:
+    """ALL distilled cards, every project — one unified brain."""
     try:
-        return (
-            get_client().table("cards").select("*")
-            .eq("project", "Arxiv_Paper_Curator").execute().data
-        )
+        return get_client().table("cards").select("*").execute().data
     except Exception:
         return []
 
@@ -117,12 +127,25 @@ def _gather_gmail() -> list[tuple[str, str]]:
     ]
 
 
+def _note_doc(n: dict) -> str:
+    return f"[Source: note] [Date: {_day(n.get('created_at'))}]\n\n{n['text']}"
+
+
+def _gather_notes() -> list[tuple[str, str]]:
+    """Captured notes, from Supabase — so rebuilds don't destroy them."""
+    try:
+        rows = get_client().table("notes").select("*").execute().data
+        return [(f"note:{n['id']}", _note_doc(n)) for n in rows]
+    except Exception:
+        return []
+
+
 _GATHER = {"claude": _gather_claude, "notion": _gather_notion, "gmail": _gather_gmail}
 
 
 def _gather_all_docs() -> list[tuple[str, str]]:
     """(key, doc) for every current source doc. `key` uniquely identifies a doc."""
-    return _gather_claude() + _gather_notion() + _gather_gmail()
+    return _gather_claude() + _gather_notion() + _gather_gmail() + _gather_notes()
 
 
 # ---------- ledger (Supabase-backed; migrates the old JSON file once) ----------
@@ -182,14 +205,15 @@ def backfill_ledger() -> None:
 # ---------- quick capture ----------
 
 async def capture_note(text: str) -> dict:
-    """'Remember this' — store a thought straight into the graph, dated."""
+    """'Remember this' — store a thought durably (Supabase) AND in the graph, dated."""
     configure()
-    today = datetime.now(timezone.utc).date().isoformat()
-    key = f"note:{uuid4()}"
-    doc = f"[Source: note] [Date: {today}]\n\n{text.strip()}"
-    await cognee.remember(doc, dataset_name=DATASET)
-    add_ledger_keys([key])
-    return {"ok": True, "key": key}
+    note_id = str(uuid4())
+    created = datetime.now(timezone.utc).isoformat()
+    row = {"id": note_id, "text": text.strip(), "created_at": created}
+    get_client().table("notes").insert(row).execute()  # durable copy first
+    await cognee.remember(_note_doc(row), dataset_name=DATASET)
+    add_ledger_keys([f"note:{note_id}"])
+    return {"ok": True, "key": f"note:{note_id}"}
 
 
 # ---------- feedback loop ----------
@@ -236,6 +260,7 @@ async def ask(query: str, session_id: str | None = None) -> dict:
         query, datasets=[DATASET], context_profile="qa",
         include_references=True, session_id=session_id,
         feedback_influence=FEEDBACK_INFLUENCE,
+        system_prompt=ENGRAM_SYSTEM_PROMPT,
     )
     text = "\n\n".join(getattr(r, "text", "") for r in results if getattr(r, "text", ""))
     if "Evidence:" in text:
@@ -244,6 +269,37 @@ async def ask(query: str, session_id: str | None = None) -> dict:
         answer, evidence = text, ""
     sources = sorted({s.strip() for s in re.findall(r"\[Source: ([^\]]+)\]", evidence)})
     return {"answer": answer.strip() or "Nothing relevant found in your memory yet.", "sources": sources}
+
+
+def resurface() -> dict | None:
+    """Proactive recall — surface one past insight unprompted.
+
+    Pulls a random distilled card (favoring concepts/decisions, which age best),
+    with its date and project, so the UI can say "three weeks ago you…".
+    Pure Supabase — no LLM cost.
+    """
+    import random
+
+    try:
+        rows = (
+            get_client().table("cards")
+            .select("kind,title,question,answer,project,session_date,created_at")
+            .execute().data
+        )
+    except Exception:
+        rows = []
+    if not rows:
+        return None
+    weighted = [r for r in rows if r["kind"] in ("concept", "decision")] or rows
+    card = random.choice(weighted)
+    return {
+        "kind": card["kind"],
+        "title": card["title"],
+        "question": card.get("question") or card["title"],
+        "answer": card["answer"],
+        "project": card.get("project"),
+        "date": _day(card.get("session_date") or card.get("created_at")),
+    }
 
 
 def stats() -> dict:

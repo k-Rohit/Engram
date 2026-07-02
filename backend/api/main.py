@@ -17,6 +17,7 @@ from backend.memory.cognee_client import (
     capture_note,
     consolidate_feedback,
     record_feedback,
+    resurface,
     stats,
     sync,
 )
@@ -54,6 +55,12 @@ def check_health():
 def get_stats():
     """Live doc counts per source, from the durable graph ledger."""
     return stats()
+
+
+@app.get("/resurface")
+def get_resurface():
+    """Proactive recall: one past insight, unprompted. Null if archive is empty."""
+    return resurface() or {}
 
 
 class AskRequest(BaseModel):
