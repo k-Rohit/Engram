@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
-import { Brain, FileText, Mail, Send, Loader2, Check, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Brain, FileText, Mail, Send, Loader2, Check, Sparkles, RefreshCw, Plus } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
 const API_BASE = "http://localhost:8090";
@@ -23,10 +23,10 @@ const sourceMeta: Record<string, { label: string; cls: string }> = {
   gmail: { label: "Gmail", cls: "bg-[#ef4444]/12 text-[#fca5a5] border-[#ef4444]/25" },
 };
 
-const CONNECTED = [
-  { key: "claude_code", icon: Brain, label: "Claude Code", desc: "Distilled coding sessions" },
-  { key: "notion", icon: FileText, label: "Notion", desc: "Your written notes" },
-  { key: "gmail", icon: Mail, label: "Gmail", desc: "AI / tech newsletters" },
+const SOURCES = [
+  { key: "claude_code", sync: "claude", icon: Brain, label: "Claude Code", desc: "Distilled coding sessions" },
+  { key: "notion", sync: "notion", icon: FileText, label: "Notion", desc: "Your written notes" },
+  { key: "gmail", sync: "gmail", icon: Mail, label: "Gmail", desc: "AI / tech newsletters" },
 ];
 
 const SUGGESTIONS = [
@@ -39,8 +39,46 @@ function AppPage() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  // One session id per chat → Cognee session memory, so follow-ups keep context.
-  const [sessionId] = useState(() => crypto.randomUUID());
+  const [sessionId, setSessionId] = useState("");
+  const [syncing, setSyncing] = useState<string | null>(null);
+  const [syncResult, setSyncResult] = useState<Record<string, string>>({});
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Load persisted thread (session id + messages) on mount — survives refresh & server restart.
+  useEffect(() => {
+    let sid = localStorage.getItem("engram_session");
+    if (!sid) {
+      sid = crypto.randomUUID();
+      localStorage.setItem("engram_session", sid);
+    }
+    setSessionId(sid);
+    const saved = localStorage.getItem("engram_messages");
+    if (saved) {
+      try {
+        setMessages(JSON.parse(saved));
+      } catch {
+        /* ignore */
+      }
+    }
+  }, []);
+
+  // Persist messages.
+  useEffect(() => {
+    if (sessionId) localStorage.setItem("engram_messages", JSON.stringify(messages));
+  }, [messages, sessionId]);
+
+  // Auto-scroll to the newest message.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  const newChat = () => {
+    const sid = crypto.randomUUID();
+    localStorage.setItem("engram_session", sid);
+    localStorage.setItem("engram_messages", "[]");
+    setSessionId(sid);
+    setMessages([]);
+  };
 
   const ask = async (question: string) => {
     const q = question.trim();
@@ -66,6 +104,23 @@ function AppPage() {
     }
   };
 
+  const syncSource = async (source: string) => {
+    setSyncing(source);
+    setSyncResult((r) => ({ ...r, [source]: "" }));
+    try {
+      const res = await fetch(`${API_BASE}/sync/${source}`, { method: "POST" });
+      const data = await res.json();
+      setSyncResult((r) => ({
+        ...r,
+        [source]: data.added > 0 ? `+${data.added} new` : "up to date",
+      }));
+    } catch {
+      setSyncResult((r) => ({ ...r, [source]: "failed" }));
+    } finally {
+      setSyncing(null);
+    }
+  };
+
   return (
     <div className="h-screen w-screen bg-background text-foreground flex flex-col overflow-hidden">
       {/* Top bar */}
@@ -74,9 +129,17 @@ function AppPage() {
           <span className="w-2 h-2 rounded-full bg-[#7c3aed] shadow-[0_0_12px_#7c3aed]" />
           Engram
         </Link>
-        <div className="flex items-center gap-2 text-xs text-[#6b7280]">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-          brain online
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5 text-xs text-[#6b7280]">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            brain online
+          </span>
+          <button
+            onClick={newChat}
+            className="flex items-center gap-1.5 text-sm text-[#9ca3af] hover:text-white px-3 py-1.5 rounded-lg border border-[#1f1f1f] hover:border-[#7c3aed]/50 transition cursor-pointer"
+          >
+            <Plus className="w-4 h-4" /> New chat
+          </button>
         </div>
       </header>
 
@@ -144,6 +207,7 @@ function AppPage() {
                 </div>
               </div>
             )}
+            <div ref={bottomRef} />
           </div>
           <form
             onSubmit={(e) => {
@@ -170,33 +234,46 @@ function AppPage() {
           </form>
         </div>
 
-        {/* Right: connected sources */}
-        <aside className="w-[320px] flex flex-col min-h-0 bg-[#0b0b0b]">
+        {/* Right: sources + sync */}
+        <aside className="w-[340px] flex flex-col min-h-0 bg-[#0b0b0b]">
           <div className="px-6 py-4 border-b border-[#1f1f1f] shrink-0">
-            <h2 className="text-sm font-semibold text-white">Connected Sources</h2>
-            <p className="text-xs text-[#6b7280] mt-0.5">All feeding one unified graph.</p>
+            <h2 className="text-sm font-semibold text-white">Sources</h2>
+            <p className="text-xs text-[#6b7280] mt-0.5">Sync new data into your brain.</p>
           </div>
           <div className="flex-1 overflow-y-auto px-4 py-5 space-y-3">
-            {CONNECTED.map((s) => (
-              <div
-                key={s.key}
-                className="flex items-center gap-3 px-3.5 py-3 rounded-xl border border-[#1f1f1f] bg-[#101010]"
-              >
-                <span className="w-10 h-10 rounded-xl bg-[#7c3aed]/10 border border-[#7c3aed]/20 flex items-center justify-center shrink-0">
-                  <s.icon className="w-5 h-5 text-[#a78bfa]" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-white">{s.label}</div>
-                  <div className="text-[11px] text-[#6b7280] truncate">{s.desc}</div>
+            {SOURCES.map((s) => (
+              <div key={s.key} className="px-3.5 py-3 rounded-xl border border-[#1f1f1f] bg-[#101010]">
+                <div className="flex items-center gap-3">
+                  <span className="w-10 h-10 rounded-xl bg-[#7c3aed]/10 border border-[#7c3aed]/20 flex items-center justify-center shrink-0">
+                    <s.icon className="w-5 h-5 text-[#a78bfa]" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-white">{s.label}</div>
+                    <div className="text-[11px] text-[#6b7280] truncate">{s.desc}</div>
+                  </div>
+                  <button
+                    onClick={() => syncSource(s.sync)}
+                    disabled={syncing !== null}
+                    className="btn-violet-outline rounded-lg px-2.5 py-1.5 text-xs flex items-center gap-1.5 shrink-0"
+                  >
+                    {syncing === s.sync ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    )}
+                    Sync
+                  </button>
                 </div>
-                <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-400 shrink-0">
-                  <Check className="w-3.5 h-3.5" /> live
-                </span>
+                {syncResult[s.sync] && (
+                  <div className="mt-2 text-[11px] text-[#a78bfa] flex items-center gap-1 pl-[52px]">
+                    <Check className="w-3 h-3" /> {syncResult[s.sync]}
+                  </div>
+                )}
               </div>
             ))}
             <p className="text-[11px] text-[#4b5563] px-1 pt-2 leading-relaxed">
-              Your code, notes, and reading are distilled into one Cognee knowledge graph — so answers
-              connect across all of them.
+              Sync pulls only <span className="text-[#9ca3af]">new</span> data through Cognee — existing
+              memory is never re-processed.
             </p>
           </div>
         </aside>

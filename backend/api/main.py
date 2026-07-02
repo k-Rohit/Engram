@@ -4,12 +4,15 @@ from pathlib import Path
 # Make the repo root importable so `backend...` works when run directly.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import asyncio
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from backend.memory.cognee_client import ask
+from backend.memory.cognee_client import ask, sync
+from backend.ingestion.claude_transcripts.pipeline import run as distill_claude
 
 app = FastAPI(title="Engram")
 
@@ -44,6 +47,25 @@ class AskRequest(BaseModel):
 async def ask_endpoint(req: AskRequest):
     """Query the whole second brain; returns {answer, sources}."""
     return await ask(req.question, session_id=req.session_id)
+
+
+@app.post("/sync/claude")
+async def sync_claude():
+    """Distill any new Claude turns into cards, then add new cards to the graph."""
+    await asyncio.to_thread(distill_claude)  # clean -> distill -> Supabase (new turns only)
+    return await sync("claude")              # new cards -> Cognee
+
+
+@app.post("/sync/notion")
+async def sync_notion():
+    """Fetch Notion pages; add any new ones to the graph."""
+    return await sync("notion")
+
+
+@app.post("/sync/gmail")
+async def sync_gmail():
+    """Fetch newsletters; add any new ones to the graph."""
+    return await sync("gmail")
 
 
 if __name__ == "__main__":
