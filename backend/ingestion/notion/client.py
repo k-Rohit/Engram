@@ -78,7 +78,12 @@ class NotionClient:
             title = self.get_page_title(page)
             print(f"Reading: {title}")
             content = "\n".join(self.read_blocks(page_id))
-            documents.append({"page_id": page_id, "title": title, "content": content})
+            documents.append({
+                "page_id": page_id,
+                "title": title,
+                "content": content,
+                "last_edited": page.get("last_edited_time", ""),
+            })
         return documents
 
 

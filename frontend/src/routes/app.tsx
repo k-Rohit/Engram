@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Brain, FileText, Mail, Send, Loader2, Check, Sparkles, RefreshCw, Plus } from "lucide-react";
+import { Send, Loader2, RefreshCw, Plus, ArrowUpRight, ThumbsUp, ThumbsDown, CornerDownLeft } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
 const API_BASE = "http://localhost:8090";
@@ -8,25 +8,34 @@ const API_BASE = "http://localhost:8090";
 export const Route = createFileRoute("/app")({
   head: () => ({
     meta: [
-      { title: "Engram — App" },
+      { title: "Engram — the archive" },
       { name: "description", content: "Query your second brain." },
     ],
   }),
   component: AppPage,
 });
 
-type Msg = { role: "user" | "engram"; text: string; sources?: string[] };
+type Msg = { role: "user" | "engram"; text: string; sources?: string[]; fb?: number };
 
-const sourceMeta: Record<string, { label: string; cls: string }> = {
-  claude_code: { label: "Claude Code", cls: "bg-[#7c3aed]/15 text-[#a78bfa] border-[#7c3aed]/30" },
-  notion: { label: "Notion", cls: "bg-white/5 text-[#e5e7eb] border-white/15" },
-  gmail: { label: "Gmail", cls: "bg-[#ef4444]/12 text-[#fca5a5] border-[#ef4444]/25" },
+type Stats = {
+  claude_cards: number;
+  notion_pages: number;
+  gmail_issues: number;
+  notes: number;
+  total_docs: number;
 };
 
-const SOURCES = [
-  { key: "claude_code", sync: "claude", icon: Brain, label: "Claude Code", desc: "Distilled coding sessions" },
-  { key: "notion", sync: "notion", icon: FileText, label: "Notion", desc: "Your written notes" },
-  { key: "gmail", sync: "gmail", icon: Mail, label: "Gmail", desc: "AI / tech newsletters" },
+const sourceLabel: Record<string, string> = {
+  claude_code: "src: claude_code",
+  notion: "src: notion",
+  gmail: "src: gmail",
+  note: "src: note",
+};
+
+const SOURCES: { sync: string; name: string; desc: string; stat: (s: Stats) => string }[] = [
+  { sync: "claude", name: "Claude Code", desc: "distilled coding sessions", stat: (s) => `${s.claude_cards} cards` },
+  { sync: "notion", name: "Notion", desc: "notes, kept verbatim", stat: (s) => `${s.notion_pages} pages` },
+  { sync: "gmail", name: "Gmail", desc: "AI / tech newsletters", stat: (s) => `${s.gmail_issues} issues` },
 ];
 
 const SUGGESTIONS = [
@@ -42,7 +51,19 @@ function AppPage() {
   const [sessionId, setSessionId] = useState("");
   const [syncing, setSyncing] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<Record<string, string>>({});
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [note, setNote] = useState("");
+  const [noteState, setNoteState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const loadStats = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/stats`);
+      setStats(await res.json());
+    } catch {
+      /* keep old stats */
+    }
+  };
 
   // Load persisted thread (session id + messages) on mount — survives refresh & server restart.
   useEffect(() => {
@@ -60,6 +81,7 @@ function AppPage() {
         /* ignore */
       }
     }
+    loadStats();
   }, []);
 
   // Persist messages.
@@ -97,7 +119,7 @@ function AppPage() {
     } catch {
       setMessages((m) => [
         ...m,
-        { role: "engram", text: "⚠️ Couldn't reach your brain on " + API_BASE + " — is the API running?" },
+        { role: "engram", text: "⚠️ Couldn't reach your archive on " + API_BASE + " — is the API running?" },
       ]);
     } finally {
       setLoading(false);
@@ -109,11 +131,16 @@ function AppPage() {
     setSyncResult((r) => ({ ...r, [source]: "" }));
     try {
       const res = await fetch(`${API_BASE}/sync/${source}`, { method: "POST" });
+      if (res.status === 409) {
+        setSyncResult((r) => ({ ...r, [source]: "busy — try again" }));
+        return;
+      }
       const data = await res.json();
       setSyncResult((r) => ({
         ...r,
         [source]: data.added > 0 ? `+${data.added} new` : "up to date",
       }));
+      loadStats();
     } catch {
       setSyncResult((r) => ({ ...r, [source]: "failed" }));
     } finally {
@@ -121,112 +148,180 @@ function AppPage() {
     }
   };
 
+  const capture = async () => {
+    const text = note.trim();
+    if (!text || noteState === "saving") return;
+    setNoteState("saving");
+    try {
+      const res = await fetch(`${API_BASE}/capture`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error();
+      setNote("");
+      setNoteState("saved");
+      loadStats();
+      setTimeout(() => setNoteState("idle"), 2500);
+    } catch {
+      setNoteState("failed");
+      setTimeout(() => setNoteState("idle"), 2500);
+    }
+  };
+
+  const giveFeedback = async (idx: number, score: number) => {
+    const answer = messages[idx];
+    if (!answer || answer.fb) return;
+    // the question is the nearest preceding user message
+    const question = [...messages.slice(0, idx)].reverse().find((m) => m.role === "user")?.text ?? "";
+    setMessages((m) => m.map((msg, i) => (i === idx ? { ...msg, fb: score } : msg)));
+    try {
+      await fetch(`${API_BASE}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, question, answer: answer.text, score }),
+      });
+    } catch {
+      /* feedback is best-effort */
+    }
+  };
+
   return (
     <div className="h-screen w-screen bg-background text-foreground flex flex-col overflow-hidden">
       {/* Top bar */}
-      <header className="flex items-center justify-between px-6 h-14 border-b border-[#1f1f1f] shrink-0">
-        <Link to="/" className="flex items-center gap-2 font-semibold">
-          <span className="w-2 h-2 rounded-full bg-[#7c3aed] shadow-[0_0_12px_#7c3aed]" />
-          Engram
-        </Link>
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1.5 text-xs text-[#6b7280]">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            brain online
-          </span>
-          <button
-            onClick={newChat}
-            className="flex items-center gap-1.5 text-sm text-[#9ca3af] hover:text-white px-3 py-1.5 rounded-lg border border-[#1f1f1f] hover:border-[#7c3aed]/50 transition cursor-pointer"
-          >
-            <Plus className="w-4 h-4" /> New chat
-          </button>
+      <header className="h-14 border-b border-border shrink-0">
+        <div className="h-full px-6 flex items-center justify-between">
+          <Link to="/" className="t-label !text-foreground flex items-center gap-2.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber pulse-dot" />
+            Engram
+          </Link>
+          <div className="flex items-center gap-5">
+            <span className="t-label hidden sm:block">
+              {stats ? `${stats.total_docs} entries` : "archive online"}
+            </span>
+            <button onClick={newChat} className="btn-line px-3 py-1.5 flex items-center gap-1.5">
+              <Plus className="w-3.5 h-3.5" /> New entry
+            </button>
+          </div>
         </div>
       </header>
 
       {/* Two panels */}
       <div className="flex-1 flex min-h-0">
-        {/* Left: chat */}
-        <div className="flex-1 flex flex-col border-r border-[#1f1f1f] min-h-0">
-          <div className="flex-1 overflow-y-auto px-8 py-6 space-y-5">
+        {/* Left: the reading room */}
+        <div className="flex-1 flex flex-col border-r border-border min-h-0">
+          <div className="flex-1 overflow-y-auto px-6 md:px-10 py-8 space-y-8">
             {messages.length === 0 && !loading && (
-              <div className="h-full flex flex-col items-center justify-center text-center px-8">
-                <div className="w-14 h-14 rounded-2xl bg-[#7c3aed]/10 border border-[#7c3aed]/20 flex items-center justify-center mb-5">
-                  <Brain className="w-7 h-7 text-[#a78bfa]" />
-                </div>
-                <p className="text-lg text-white font-medium">Ask your second brain</p>
-                <p className="text-sm text-[#6b7280] mt-1.5 max-w-md">
-                  Everything from your code, notes, and reading — connected in one graph.
+              <div className="h-full flex flex-col justify-center max-w-xl mx-auto">
+                <p className="t-label mb-5">The reading room</p>
+                <p className="font-display text-3xl md:text-4xl leading-snug text-foreground">
+                  What are you trying to <em className="text-amber">remember?</em>
                 </p>
-                <div className="mt-6 flex flex-col gap-2 w-full max-w-md">
-                  {SUGGESTIONS.map((s) => (
+                <p className="mt-4 text-sm text-muted-foreground leading-relaxed">
+                  Your code sessions, notes and reading are one connected graph. Ask, then
+                  follow up — it keeps the thread.
+                </p>
+                <div className="mt-8 divide-y divide-border border-y border-border">
+                  {SUGGESTIONS.map((s, i) => (
                     <button
                       key={s}
                       onClick={() => ask(s)}
-                      className="text-left text-sm text-[#9ca3af] hover:text-white border border-[#1f1f1f] hover:border-[#7c3aed]/40 rounded-xl px-4 py-2.5 transition cursor-pointer flex items-center gap-2"
+                      className="w-full text-left py-3.5 flex items-baseline gap-4 group cursor-pointer"
                     >
-                      <Sparkles className="w-3.5 h-3.5 text-[#7c3aed] shrink-0" />
-                      {s}
+                      <span className="font-mono text-xs text-amber shrink-0">{String(i + 1).padStart(2, "0")}</span>
+                      <span className="text-[0.95rem] text-foreground/75 group-hover:text-foreground transition-colors">
+                        {s}
+                      </span>
+                      <ArrowUpRight className="w-3.5 h-3.5 ml-auto shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                     </button>
                   ))}
                 </div>
               </div>
             )}
-            {messages.map((m, i) => (
-              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                {m.role === "user" ? (
-                  <div className="max-w-[75%] px-4 py-3 rounded-2xl bg-[#7c3aed] text-white text-sm leading-relaxed">
-                    {m.text}
+
+            <div className="max-w-2xl mx-auto space-y-8">
+              {messages.map((m, i) =>
+                m.role === "user" ? (
+                  <div key={i}>
+                    <p className="t-label mb-2">You asked</p>
+                    <p className="font-display text-2xl leading-snug text-foreground">{m.text}</p>
                   </div>
                 ) : (
-                  <div className="max-w-[85%] card-engram p-4 border-l-2 border-l-[#06b6d4]">
-                    <div className="md-answer">
-                      <ReactMarkdown>{m.text}</ReactMarkdown>
+                  <div key={i} className="card-arc">
+                    <div className="px-4 py-2 border-b border-border flex items-center justify-between">
+                      <span className="t-label">Retrieved from memory</span>
+                      {m.sources && m.sources.length > 0 && (
+                        <span className="t-label !text-amber">
+                          {m.sources.length} source{m.sources.length > 1 ? "s" : ""}
+                        </span>
+                      )}
                     </div>
-                    {m.sources && m.sources.length > 0 && (
-                      <div className="mt-3 flex flex-wrap gap-1.5">
-                        <span className="text-[10px] text-[#6b7280] mr-1 self-center">sources:</span>
-                        {m.sources.map((s) => (
-                          <span
-                            key={s}
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${sourceMeta[s]?.cls ?? "bg-white/5 text-[#9ca3af] border-white/10"}`}
-                          >
-                            {sourceMeta[s]?.label ?? s}
+                    <div className="p-5">
+                      <div className="md-answer">
+                        <ReactMarkdown>{m.text}</ReactMarkdown>
+                      </div>
+                      <div className="mt-4 pt-4 border-t border-border flex flex-wrap items-center gap-2">
+                        {m.sources?.map((s) => (
+                          <span key={s} className={`stamp ${s === "claude_code" ? "!text-amber !border-amber/40" : ""}`}>
+                            {sourceLabel[s] ?? `src: ${s}`}
                           </span>
                         ))}
+                        <span className="ml-auto flex items-center gap-1">
+                          {m.fb ? (
+                            <span className="t-label !text-amber">{m.fb > 0 ? "marked useful" : "marked off"}</span>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => giveFeedback(i, 1)}
+                                title="Useful — reinforce this memory"
+                                className="p-1.5 rounded-[3px] text-muted-foreground hover:text-amber hover:bg-amber/10 transition-colors cursor-pointer"
+                              >
+                                <ThumbsUp className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => giveFeedback(i, -1)}
+                                title="Off — weaken this memory"
+                                className="p-1.5 rounded-[3px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+                              >
+                                <ThumbsDown className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </span>
                       </div>
-                    )}
+                    </div>
                   </div>
-                )}
-              </div>
-            ))}
-            {loading && (
-              <div className="flex justify-start">
-                <div className="card-engram p-4 border-l-2 border-l-[#06b6d4] flex items-center gap-2 text-sm text-[#9ca3af]">
-                  <Loader2 className="w-4 h-4 animate-spin text-[#a78bfa]" />
-                  Searching your memory…
+                ),
+              )}
+              {loading && (
+                <div className="card-arc px-5 py-4 flex items-center gap-3">
+                  <Loader2 className="w-4 h-4 animate-spin text-amber" />
+                  <span className="t-label">Walking the graph…</span>
                 </div>
-              </div>
-            )}
-            <div ref={bottomRef} />
+              )}
+              <div ref={bottomRef} />
+            </div>
           </div>
+
           <form
             onSubmit={(e) => {
               e.preventDefault();
               ask(input);
             }}
-            className="p-4 border-t border-[#1f1f1f] shrink-0"
+            className="border-t border-border shrink-0"
           >
-            <div className="flex items-center gap-2 card-engram px-3 py-2 focus-within:border-[#7c3aed]/50 transition-colors">
+            <div className="max-w-2xl mx-auto px-6 md:px-0 py-4 flex items-center gap-3">
+              <span className="font-mono text-amber text-sm shrink-0">›</span>
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask anything you've learned..."
-                className="flex-1 bg-transparent outline-none text-sm placeholder:text-[#6b7280] px-2"
+                placeholder="query the archive…"
+                className="flex-1 bg-transparent outline-none text-[0.95rem] placeholder:text-muted-foreground/60 placeholder:font-mono placeholder:text-sm"
               />
               <button
                 type="submit"
                 disabled={loading || !input.trim()}
-                className="btn-violet w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                className="btn-amber w-9 h-9 rounded-[3px] flex items-center justify-center shrink-0"
               >
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </button>
@@ -234,46 +329,90 @@ function AppPage() {
           </form>
         </div>
 
-        {/* Right: sources + sync */}
-        <aside className="w-[340px] flex flex-col min-h-0 bg-[#0b0b0b]">
-          <div className="px-6 py-4 border-b border-[#1f1f1f] shrink-0">
-            <h2 className="text-sm font-semibold text-white">Sources</h2>
-            <p className="text-xs text-[#6b7280] mt-0.5">Sync new data into your brain.</p>
+        {/* Right: the index */}
+        <aside className="w-[320px] hidden md:flex flex-col min-h-0">
+          <div className="px-6 py-4 border-b border-border shrink-0">
+            <p className="t-label !text-foreground">The index</p>
+            <p className="text-xs text-muted-foreground mt-1">Sync pulls only what's new.</p>
           </div>
-          <div className="flex-1 overflow-y-auto px-4 py-5 space-y-3">
-            {SOURCES.map((s) => (
-              <div key={s.key} className="px-3.5 py-3 rounded-xl border border-[#1f1f1f] bg-[#101010]">
-                <div className="flex items-center gap-3">
-                  <span className="w-10 h-10 rounded-xl bg-[#7c3aed]/10 border border-[#7c3aed]/20 flex items-center justify-center shrink-0">
-                    <s.icon className="w-5 h-5 text-[#a78bfa]" />
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+            {/* quick capture */}
+            <div className="card-arc p-4">
+              <p className="t-label mb-2.5">Remember this</p>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  capture();
+                }}
+              >
+                <textarea
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      capture();
+                    }
+                  }}
+                  placeholder="a decision, an insight, anything…"
+                  rows={2}
+                  className="w-full bg-transparent outline-none text-sm resize-none placeholder:text-muted-foreground/60 leading-relaxed"
+                />
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="t-label !normal-case !tracking-normal">
+                    {noteState === "saving" && "committing to memory…"}
+                    {noteState === "saved" && <span className="!text-amber">remembered ✓</span>}
+                    {noteState === "failed" && "failed — is the API up?"}
+                    {noteState === "idle" && stats != null && `${stats.notes} notes so far`}
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-white">{s.label}</div>
-                    <div className="text-[11px] text-[#6b7280] truncate">{s.desc}</div>
+                  <button
+                    type="submit"
+                    disabled={!note.trim() || noteState === "saving"}
+                    className="btn-amber px-2.5 py-1.5 flex items-center gap-1.5"
+                  >
+                    {noteState === "saving" ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <CornerDownLeft className="w-3 h-3" />
+                    )}
+                    remember
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {SOURCES.map((s, i) => (
+              <div key={s.sync} className="card-folder p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-baseline gap-2.5">
+                      <span className="font-mono text-xs text-amber">{String(i + 1).padStart(2, "0")}</span>
+                      <span className="font-display text-lg text-foreground">{s.name}</span>
+                    </div>
+                    <p className="t-label !normal-case !tracking-wide mt-1.5 pl-[26px]">{s.desc}</p>
                   </div>
                   <button
                     onClick={() => syncSource(s.sync)}
                     disabled={syncing !== null}
-                    className="btn-violet-outline rounded-lg px-2.5 py-1.5 text-xs flex items-center gap-1.5 shrink-0"
+                    className="btn-line px-2.5 py-1.5 flex items-center gap-1.5 shrink-0"
                   >
                     {syncing === s.sync ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <Loader2 className="w-3 h-3 animate-spin" />
                     ) : (
-                      <RefreshCw className="w-3.5 h-3.5" />
+                      <RefreshCw className="w-3 h-3" />
                     )}
-                    Sync
+                    sync
                   </button>
                 </div>
-                {syncResult[s.sync] && (
-                  <div className="mt-2 text-[11px] text-[#a78bfa] flex items-center gap-1 pl-[52px]">
-                    <Check className="w-3 h-3" /> {syncResult[s.sync]}
-                  </div>
-                )}
+                <div className="mt-3 pl-[26px] flex items-center justify-between">
+                  <span className="t-label">{stats ? s.stat(stats) : "—"}</span>
+                  {syncResult[s.sync] && <span className="t-label !text-amber">{syncResult[s.sync]}</span>}
+                </div>
               </div>
             ))}
-            <p className="text-[11px] text-[#4b5563] px-1 pt-2 leading-relaxed">
-              Sync pulls only <span className="text-[#9ca3af]">new</span> data through Cognee — existing
-              memory is never re-processed.
+            <p className="t-label !normal-case !tracking-normal leading-relaxed px-1 pt-3">
+              Auto-sync runs hourly. Existing memory is never re-processed — only new entries
+              pass through the graph. Ratings reshape future recall.
             </p>
           </div>
         </aside>

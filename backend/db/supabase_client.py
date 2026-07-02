@@ -29,6 +29,33 @@ already distilled, so re-runs only process newly-appended turns):
         updated_at      timestamptz default now()
     );
 
+The `graph_ledger` table records which docs are already in the Cognee graph
+(Cognee does NOT dedup, so this must be durable — not a local file):
+
+    create table if not exists public.graph_ledger (
+        key        text primary key,
+        source     text,
+        created_at timestamptz default now()
+    );
+
+The `feedback` table stores answer ratings (also pushed into Cognee session
+memory as QAEntry feedback for improve()):
+
+    create table if not exists public.feedback (
+        id            uuid primary key default gen_random_uuid(),
+        session_id    text not null,
+        question      text,
+        answer        text,
+        score         int not null,
+        feedback_text text,
+        consolidated  boolean default false,
+        created_at    timestamptz default now()
+    );
+
+Migration for dates on cards (run once):
+
+    alter table public.cards add column if not exists session_date timestamptz;
+
 (Notion notes and Gmail newsletters are NOT stored here — they go straight to
 Cognee's remember(), which chunks and dedups natively. So no notes/emails tables.)
 """
@@ -87,6 +114,7 @@ def save_cards(session: dict, cards: list) -> int:
             "session_id": session["session_id"],
             "project": session["project"],
             "source": session["source"],
+            "session_date": session.get("started_at"),
             "kind": c.kind,
             "title": c.title,
             "question": c.question,
@@ -97,3 +125,45 @@ def save_cards(session: dict, cards: list) -> int:
     ]
     get_client().table(TABLE).insert(rows).execute()
     return len(rows)
+
+
+# ---------- graph ledger (what's already in the Cognee graph) ----------
+
+def get_ledger_keys() -> set[str]:
+    """Doc-keys already ingested into the Cognee graph."""
+    res = get_client().table("graph_ledger").select("key").execute()
+    return {row["key"] for row in res.data}
+
+
+def add_ledger_keys(keys: list[str]) -> None:
+    """Record doc-keys as ingested. Key format: '<source>:<id>'."""
+    if not keys:
+        return
+    rows = [{"key": k, "source": k.split(":", 1)[0]} for k in keys]
+    get_client().table("graph_ledger").upsert(rows).execute()
+
+
+# ---------- feedback ----------
+
+def save_feedback(session_id: str, question: str, answer: str, score: int, text: str = "") -> None:
+    get_client().table("feedback").insert(
+        {
+            "session_id": session_id,
+            "question": question,
+            "answer": answer,
+            "score": score,
+            "feedback_text": text,
+        }
+    ).execute()
+
+
+def get_unconsolidated_feedback_sessions() -> list[str]:
+    """Session ids with feedback not yet bridged into the graph via improve()."""
+    res = get_client().table("feedback").select("session_id").eq("consolidated", False).execute()
+    return sorted({row["session_id"] for row in res.data})
+
+
+def mark_feedback_consolidated(session_ids: list[str]) -> None:
+    if not session_ids:
+        return
+    get_client().table("feedback").update({"consolidated": True}).in_("session_id", session_ids).execute()

@@ -1,19 +1,23 @@
 """Unified Cognee graph — the second brain.
 
 - Claude transcripts: clean -> distill -> cards (in Supabase, because distilling
-  is expensive and worth persisting) -> fed here.
+  is expensive and worth persisting) -> fed here, WITH session dates.
 - Notion & Gmail: fetched and handed STRAIGHT to remember(). Cognee chunks,
-  extracts entities, and dedups natively — no chunking/Supabase glue needed.
+  extracts entities natively — no chunking/Supabase glue needed.
+- Quick notes: captured straight from the UI via capture_note().
+- The graph ledger (what's already ingested) lives in Supabase — Cognee does
+  NOT dedup on remember(), so this record must be durable.
 
-Build:  python backend/memory/cognee_client.py
-Ask:    from backend.memory.cognee_client import ask
+CLI:  python backend/memory/cognee_client.py [sync|build|backfill]
 """
 
 import os
 import sys
 import json
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 os.environ.setdefault("ENABLE_BACKEND_ACCESS_CONTROL", "false")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -25,12 +29,24 @@ load_dotenv()
 import cognee
 
 from backend.config import NEWSLETTER_SENDERS
-from backend.db.supabase_client import get_client
+from backend.db.supabase_client import (
+    add_ledger_keys,
+    get_client,
+    get_ledger_keys,
+    get_unconsolidated_feedback_sessions,
+    mark_feedback_consolidated,
+    save_feedback,
+)
 from backend.ingestion.notion.factory import get_client as get_notion_client
 from backend.ingestion.gmail.factory import get_client as get_gmail_client
 
 DATASET = "engram"
 DATA_DIR = str(Path(__file__).resolve().parents[2] / "cognee_data")
+# How much answer feedback shapes future recall ranking (0 = ignore feedback).
+FEEDBACK_INFLUENCE = 0.3
+
+# Old local ledger — kept only to migrate its keys into Supabase once.
+LEGACY_LEDGER = Path(__file__).resolve().parents[2] / "cognee_ingested.json"
 
 
 def configure() -> None:
@@ -41,19 +57,33 @@ def configure() -> None:
     cognee.config.data_root_directory(DATA_DIR)
 
 
+def _day(iso: str | None) -> str:
+    """'2026-06-21T05:22:01.055Z' -> '2026-06-21' (empty-safe)."""
+    return (iso or "")[:10]
+
+
+# ---------- doc formats (dates included so temporal recall works) ----------
+
 def _card_doc(c: dict) -> str:
+    date = _day(c.get("session_date"))
+    date_tag = f" [Date: {date}]" if date else ""
     return (
-        f"[Source: claude_code] [Project: {c['project']}] [Kind: {c['kind']}]\n"
+        f"[Source: claude_code] [Project: {c['project']}] [Kind: {c['kind']}]{date_tag}\n"
         f"{c['title']}\nQ: {c.get('question', '')}\nA: {c['answer']}"
     )
 
 
 def _page_doc(p: dict) -> str:
-    return f"[Source: notion] [Title: {p['title']}]\n\n{p['content']}"
+    date = _day(p.get("last_edited"))
+    date_tag = f" [Edited: {date}]" if date else ""
+    return f"[Source: notion] [Title: {p['title']}]{date_tag}\n\n{p['content']}"
 
 
 def _email_doc(e: dict) -> str:
-    return f"[Source: gmail] [From: {e['sender']}] [Subject: {e['subject']}]\n\n{e['body']}"
+    return (
+        f"[Source: gmail] [From: {e['sender']}] [Subject: {e['subject']}] "
+        f"[Date: {e.get('date', '')}]\n\n{e['body']}"
+    )
 
 
 def _cards() -> list[dict]:
@@ -66,10 +96,7 @@ def _cards() -> list[dict]:
         return []
 
 
-# Local ledger of doc-keys already sent to Cognee. Needed because Cognee does
-# NOT dedup content on remember() — so we track what's in the graph ourselves.
-LEDGER_PATH = Path(__file__).resolve().parents[2] / "cognee_ingested.json"
-
+# ---------- gathering ----------
 
 def _gather_claude() -> list[tuple[str, str]]:
     return [(f"card:{c['id']}", _card_doc(c)) for c in _cards()]
@@ -98,13 +125,20 @@ def _gather_all_docs() -> list[tuple[str, str]]:
     return _gather_claude() + _gather_notion() + _gather_gmail()
 
 
+# ---------- ledger (Supabase-backed; migrates the old JSON file once) ----------
+
 def _load_ledger() -> set[str]:
-    return set(json.loads(LEDGER_PATH.read_text())) if LEDGER_PATH.exists() else set()
+    keys = get_ledger_keys()
+    if not keys and LEGACY_LEDGER.exists():
+        legacy = set(json.loads(LEGACY_LEDGER.read_text()))
+        if legacy:
+            add_ledger_keys(sorted(legacy))
+            print(f"migrated {len(legacy)} ledger keys from JSON -> Supabase")
+        return legacy
+    return keys
 
 
-def _save_ledger(keys: set[str]) -> None:
-    LEDGER_PATH.write_text(json.dumps(sorted(keys)))
-
+# ---------- build / sync ----------
 
 async def build_graph() -> None:
     """FULL rebuild: prune everything, re-ingest all sources, reset the ledger.
@@ -115,7 +149,10 @@ async def build_graph() -> None:
     await cognee.prune.prune_data()
     await cognee.prune.prune_system(metadata=True)
     await cognee.remember([doc for _, doc in items], dataset_name=DATASET)
-    _save_ledger({key for key, _ in items})
+    # reset ledger to exactly this build
+    sb = get_client()
+    sb.table("graph_ledger").delete().neq("key", "").execute()
+    add_ledger_keys([key for key, _ in items])
     print(f"done — {len(items)} docs ingested, ledger reset.")
 
 
@@ -131,30 +168,74 @@ async def sync(source: str | None = None) -> dict:
     print(f"[sync {source or 'all'}] {len(items)} docs · {len(new)} new")
     if new:
         await cognee.remember([doc for _, doc in new], dataset_name=DATASET)
-        _save_ledger(ingested | {key for key, _ in new})
+        add_ledger_keys([key for key, _ in new])
     return {"source": source or "all", "total": len(items), "added": len(new)}
 
 
 def backfill_ledger() -> None:
-    """Mark all CURRENT source docs as already-ingested (no remember). Run once so
-    sync() knows the contents of a graph that was built before the ledger existed."""
+    """Mark all CURRENT source docs as already-ingested (no remember)."""
     items = _gather_all_docs()
-    _save_ledger({key for key, _ in items})
+    add_ledger_keys([key for key, _ in items])
     print(f"ledger backfilled with {len(items)} keys (no ingestion).")
 
 
-async def ask(query: str, session_id: str | None = None) -> dict:
-    """Unified recall across the whole brain. Returns {answer, sources}.
+# ---------- quick capture ----------
 
-    `session_id` gives multi-turn conversational memory — Cognee's session cache
-    keeps prior turns so follow-ups like "both"/"that" resolve.
-    """
+async def capture_note(text: str) -> dict:
+    """'Remember this' — store a thought straight into the graph, dated."""
+    configure()
+    today = datetime.now(timezone.utc).date().isoformat()
+    key = f"note:{uuid4()}"
+    doc = f"[Source: note] [Date: {today}]\n\n{text.strip()}"
+    await cognee.remember(doc, dataset_name=DATASET)
+    add_ledger_keys([key])
+    return {"ok": True, "key": key}
+
+
+# ---------- feedback loop ----------
+
+async def record_feedback(
+    session_id: str, question: str, answer: str, score: int, text: str = ""
+) -> dict:
+    """Rate an answer. Stored in Supabase (audit) AND pushed into Cognee session
+    memory as a QAEntry with feedback — recall(feedback_influence>0) uses it,
+    and consolidate_feedback() bridges it into the permanent graph."""
+    configure()
+    save_feedback(session_id, question, answer, score, text)
+    entry = cognee.QAEntry(
+        question=question,
+        answer=answer,
+        feedback_score=score,
+        feedback_text=text or ("useful" if score > 0 else "not useful"),
+    )
+    await cognee.remember(entry, session_id=session_id)
+    return {"ok": True}
+
+
+async def consolidate_feedback() -> dict:
+    """Run cognee.improve() over sessions with new feedback — bridges session
+    memory + feedback weighting into the permanent graph. Costs LLM calls;
+    run deliberately (endpoint / scheduled), not on every click."""
+    configure()
+    session_ids = get_unconsolidated_feedback_sessions()
+    if not session_ids:
+        return {"ok": True, "sessions": 0}
+    await cognee.improve(dataset=DATASET, session_ids=session_ids)
+    mark_feedback_consolidated(session_ids)
+    return {"ok": True, "sessions": len(session_ids)}
+
+
+# ---------- ask / stats ----------
+
+async def ask(query: str, session_id: str | None = None) -> dict:
+    """Unified recall across the whole brain. Returns {answer, sources}."""
     import re
 
     configure()
     results = await cognee.recall(
         query, datasets=[DATASET], context_profile="qa",
         include_references=True, session_id=session_id,
+        feedback_influence=FEEDBACK_INFLUENCE,
     )
     text = "\n\n".join(getattr(r, "text", "") for r in results if getattr(r, "text", ""))
     if "Evidence:" in text:
@@ -163,6 +244,23 @@ async def ask(query: str, session_id: str | None = None) -> dict:
         answer, evidence = text, ""
     sources = sorted({s.strip() for s in re.findall(r"\[Source: ([^\]]+)\]", evidence)})
     return {"answer": answer.strip() or "Nothing relevant found in your memory yet.", "sources": sources}
+
+
+def stats() -> dict:
+    """Live counts for the UI, from the durable ledger."""
+    keys = get_ledger_keys()
+    by = {"card": 0, "notion": 0, "gmail": 0, "note": 0}
+    for k in keys:
+        prefix = k.split(":", 1)[0]
+        if prefix in by:
+            by[prefix] += 1
+    return {
+        "claude_cards": by["card"],
+        "notion_pages": by["notion"],
+        "gmail_issues": by["gmail"],
+        "notes": by["note"],
+        "total_docs": len(keys),
+    }
 
 
 if __name__ == "__main__":

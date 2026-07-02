@@ -76,6 +76,7 @@ class ClaudeTranscriptsClient:
         """Parse one session into ordered, fluff-free turns + a formatted conversation."""
         turns: list[dict] = []
         session_id: str | None = None
+        started_at: str | None = None
 
         for line in session_path.open(encoding="utf-8"):
             line = line.strip()
@@ -96,6 +97,7 @@ class ClaudeTranscriptsClient:
                 continue
 
             session_id = session_id or event.get("sessionId")
+            started_at = started_at or event.get("timestamp")
             turns.append({"role": event["message"]["role"], "text": text})
 
         conversation = format_conversation(turns)
@@ -103,6 +105,7 @@ class ClaudeTranscriptsClient:
             "project": project_label(session_path),
             "session_id": session_id or session_path.stem,
             "source": "claude_code",
+            "started_at": started_at,          # ISO timestamp of first real turn
             "turns": turns,
             "conversation": conversation,
         }
