@@ -54,6 +54,7 @@ Answer the user's question DIRECTLY and CONCISELY, in plain prose. Rules:
 - Address the user as "you". A few sentences or a short bullet list.
 - Ground every statement in the provided memory; never invent. If the memory doesn't cover it, say so plainly.
 - Memory excerpts carry [Date: ...] tags — use them when the question involves time ("recently", "last month", "when did I").
+- The memory spans MANY unrelated areas of the user's life ([Project: ...] / [Source: ...] tags show which). Identify which area the question is about and answer ONLY from memory in that area — silently discard excerpts from unrelated projects/topics, even if they were retrieved.
 - Never reply with filler like "Got it." — always give substance or say the memory has nothing.
 """
 
